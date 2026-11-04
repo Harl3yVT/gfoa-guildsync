@@ -23,6 +23,8 @@ SavedVariables. It never acts for you.
 - **My characters** (`/gfoa chars`): Discord link status, and **Show import code** for the guild Discord's
   "Import from addon" button.
 - Dungeon runs, raid attendance and loot history (data only).
+- **One look** (1.3.0): dark plum windows, pink paw titles and a pastel rainbow rule. Guild, Cooldowns, Buddy and
+  Finder share a tab row, so you can hop between them in place.
 
 Full command list, options and what the addon saves: [GFoAGuildSync/README.md](GFoAGuildSync/README.md).
 
@@ -49,3 +51,7 @@ the zip root, see `.pkgmeta`) and publishes the GitHub release with a `release.j
 
 To also upload to CurseForge, add the repo secret `CF_API_KEY` and a line `## X-Curse-Project-ID: <id>` to the
 .toc (Wago works the same way with `WAGO_API_TOKEN` and `## X-Wago-ID`); without them that upload is skipped.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE).

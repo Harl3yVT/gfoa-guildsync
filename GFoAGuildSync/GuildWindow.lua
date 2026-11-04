@@ -25,7 +25,7 @@ local shown = {}
 local offset = 0
 
 local function seenText(m)
-  if m.online then return "|cff44ff44online|r" end
+  if m.online then return ns.ui.GOOD .. "online|r" end
   local d = m.lastOnlineDays
   if type(d) ~= "number" then return "?" end
   if d < 1 then return math.floor(d * 24 + 0.5) .. "h" end
@@ -44,9 +44,9 @@ local function render()
     local m = shown[offset + i]
     row.member = m
     if m then
-      local name = (indent[m] and "|cff777777- |r" or "") .. W.classColor(m.class) .. (m.name or "?") .. "|r"
+      local name = (indent[m] and (W.MUTED .. "- |r") or "") .. W.classColor(m.class) .. (m.name or "?") .. "|r"
       if ns.opt("guildCheck", true) and L.isRegistered(discord, m.name) then name = name .. " " .. ns.CHECK end
-      local dim = m.online and "" or "|cffaaaaaa"
+      local dim = m.online and "" or W.MUTED
       row.cols.name:SetText(name)
       row.cols.level:SetText(dim .. tostring(m.level or "?"))
       row.cols.class:SetText(W.classColor(m.class) .. W.className(m.class) .. "|r")
@@ -57,6 +57,14 @@ local function render()
       row:Show()
     else
       row:Hide()
+    end
+  end
+  if frame.empty then
+    local e = frame.emptyState
+    frame.empty:SetShown(e ~= nil)
+    if e then
+      frame.empty.title:SetText(e[1])
+      frame.empty.hint:SetText(e[2])
     end
   end
   if slider then
@@ -80,9 +88,18 @@ local function refresh()
   for _, m in ipairs(members) do if m.online then online = online + 1 end end
   countText:SetText(string.format("%d shown / %d members (%d online), scanned %s", #shown, #members, online,
     ns.ago(g and g.updated)))
+  if #members == 0 then
+    frame.emptyState = { "No roster scan yet", "It fills in a few seconds after login. Press Rescan to scan now." }
+  elseif #shown == 0 then
+    frame.emptyState = { "Nobody matches these filters", "Clear the search, or set Class and Role back to all." }
+  else
+    frame.emptyState = nil
+  end
+  local pink = ns.ui.C.pink
   for _, h in ipairs(frame.headers) do
-    local arrow = (h.key == sortKey) and (sortDesc and " v" or " ^") or ""
-    h.text:SetText(h.title .. arrow)
+    local active = h.key == sortKey
+    h.text:SetText(h.title .. (active and (sortDesc and " v" or " ^") or ""))
+    if active then h.text:SetTextColor(pink[1], pink[2], pink[3]) else h.text:SetTextColor(0.65, 0.62, 0.70) end
   end
   render()
 end
@@ -101,7 +118,7 @@ local function rowTooltip(row)
   if m.officerNote and m.officerNote ~= "" then GameTooltip:AddLine("Officer note: " .. m.officerNote, 1, 0.8, 0.5, true) end
   local e = L.memberEntry(discord, m.name)
   if e then
-    if e.registered then GameTooltip:AddLine(ns.CHECK .. " registered on Discord", 0.6, 1, 0.6) end
+    if e.registered then GameTooltip:AddLine(ns.CHECK .. " registered on Discord", 0.74, 0.89, 0.64) end
     local altLine = L.altLine(discord, m.name)
     if altLine then GameTooltip:AddLine(altLine, 0.83, 0.55, 1) end
     local alts = L.altsOf(discord, m.name)
@@ -150,56 +167,57 @@ local function create()
   local W = ns.ui
   local width = 24
   for _, c in ipairs(COLUMNS) do width = width + c.width end
-  frame = W.window("GFoAGuildSyncGuildFrame", "GFoA Guild", width + 24, 144 + ROWS * ROW_H, "guildPos")
+  frame = W.window("GFoAGuildSyncGuildFrame", "GFoA Guild", width + 24, 144 + ROWS * ROW_H, "guildPos", "guild")
+  local top = frame.top
 
   -- Filters
   local online = W.check(frame, "Online only", function() return filter.onlineOnly end, function(v)
     filter.onlineOnly = v
     refresh()
   end)
-  online:SetPoint("TOPLEFT", 10, -28)
+  online:SetPoint("TOPLEFT", 10, -top)
 
   classButton = W.button(frame, "Class: all", 100, 20, classMenu)
-  classButton:SetPoint("TOPLEFT", 110, -30)
+  classButton:SetPoint("TOPLEFT", 110, -top - 2)
 
   local lvlLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  lvlLabel:SetPoint("TOPLEFT", 222, -34)
+  lvlLabel:SetPoint("TOPLEFT", 222, -top - 6)
   lvlLabel:SetText("Level")
   local minBox = W.editBox(frame, 26, true, function(t)
     filter.minLevel = tonumber(t)
     refresh()
   end)
-  minBox:SetPoint("TOPLEFT", 262, -30)
+  minBox:SetPoint("TOPLEFT", 262, -top - 2)
   local dash = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  dash:SetPoint("TOPLEFT", 293, -34)
+  dash:SetPoint("TOPLEFT", 293, -top - 6)
   dash:SetText("-")
   local maxBox = W.editBox(frame, 26, true, function(t)
     filter.maxLevel = tonumber(t)
     refresh()
   end)
-  maxBox:SetPoint("TOPLEFT", 306, -30)
+  maxBox:SetPoint("TOPLEFT", 306, -top - 2)
 
   local searchLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  searchLabel:SetPoint("TOPLEFT", 350, -34)
+  searchLabel:SetPoint("TOPLEFT", 350, -top - 6)
   searchLabel:SetText("Search")
   local search = W.editBox(frame, 160, false, function(t)
     filter.search = t
     refresh()
   end)
-  search:SetPoint("TOPLEFT", 398, -30)
+  search:SetPoint("TOPLEFT", 398, -top - 2)
 
   local scan = W.button(frame, "Rescan", 70, 20, function() if ns.refreshRoster then ns.refreshRoster(true) end end)
-  scan:SetPoint("TOPRIGHT", -30, -30)
+  scan:SetPoint("TOPRIGHT", -14, -top - 2)
 
   -- Second row: role (from the guild Discord) and alts grouped under their main
   roleButton = W.button(frame, "Role: all", 100, 20, roleMenu)
-  roleButton:SetPoint("TOPLEFT", 12, -54)
+  roleButton:SetPoint("TOPLEFT", 12, -top - 26)
   local group = W.check(frame, "Group alts under their main", function() return ns.opt("guildGroupAlts", false) end,
     function(v)
       ns.setOpt("guildGroupAlts", v)
       refresh()
     end)
-  group:SetPoint("TOPLEFT", 120, -52)
+  group:SetPoint("TOPLEFT", 120, -top - 24)
 
   -- Column headers (click to sort)
   frame.headers = {}
@@ -207,7 +225,7 @@ local function create()
   for _, c in ipairs(COLUMNS) do
     local h = CreateFrame("Button", nil, frame)
     h:SetSize(c.width, 18)
-    h:SetPoint("TOPLEFT", x, -80)
+    h:SetPoint("TOPLEFT", x, -top - 52)
     local fs = h:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     fs:SetPoint("LEFT", 2, 0)
     h.text, h.key, h.title = fs, c.key, c.title
@@ -225,10 +243,13 @@ local function create()
     table.insert(frame.headers, h)
     x = x + c.width
   end
+  local rule = W.divider(frame)
+  rule:SetPoint("TOPLEFT", 12, -top - 70)
+  rule:SetPoint("TOPRIGHT", -12, -top - 70)
 
   -- Rows
   local list = CreateFrame("Frame", nil, frame)
-  list:SetPoint("TOPLEFT", 12, -100)
+  list:SetPoint("TOPLEFT", 12, -top - 72)
   list:SetSize(width - 12, ROWS * ROW_H)
   list:EnableMouseWheel(true)
   list:SetScript("OnMouseWheel", function(_, delta)
@@ -244,11 +265,11 @@ local function create()
     if i % 2 == 0 then
       local bg = row:CreateTexture(nil, "BACKGROUND")
       bg:SetAllPoints()
-      bg:SetColorTexture(1, 1, 1, 0.04)
+      bg:SetColorTexture(1, 1, 1, 0.035)
     end
     local hl = row:CreateTexture(nil, "HIGHLIGHT")
     hl:SetAllPoints()
-    hl:SetColorTexture(1, 1, 1, 0.1)
+    hl:SetColorTexture(W.C.pink[1], W.C.pink[2], W.C.pink[3], 0.12)
     row.cols = {}
     local cx = 0
     for _, c in ipairs(COLUMNS) do
@@ -268,7 +289,7 @@ local function create()
   -- Scroll bar
   slider = CreateFrame("Slider", nil, frame)
   slider:SetOrientation("VERTICAL")
-  slider:SetPoint("TOPRIGHT", -10, -102)
+  slider:SetPoint("TOPRIGHT", -10, -top - 74)
   slider:SetSize(14, ROWS * ROW_H - 4)
   slider:SetThumbTexture("Interface\\Buttons\\UI-ScrollBar-Knob")
   local track = slider:CreateTexture(nil, "BACKGROUND")
@@ -283,11 +304,28 @@ local function create()
     render()
   end)
 
+  -- Empty state, centred over the list
+  local empty = CreateFrame("Frame", nil, list)
+  empty:SetAllPoints()
+  local paw = empty:CreateTexture(nil, "ARTWORK")
+  paw:SetTexture(W.TEX.paw)
+  paw:SetSize(32, 32)
+  paw:SetPoint("CENTER", 0, 34)
+  paw:SetAlpha(0.8)
+  empty.title = empty:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  empty.title:SetPoint("TOP", paw, "BOTTOM", 0, -8)
+  empty.title:SetTextColor(W.C.pink[1], W.C.pink[2], W.C.pink[3])
+  empty.hint = empty:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  empty.hint:SetPoint("TOP", empty.title, "BOTTOM", 0, -6)
+  empty.hint:SetTextColor(0.65, 0.62, 0.70)
+  empty:Hide()
+  frame.empty = empty
+
   countText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   countText:SetPoint("BOTTOMLEFT", 12, 12)
 
   local legend = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  legend:SetPoint("BOTTOMRIGHT", -12, 12)
+  legend:SetPoint("BOTTOMRIGHT", -14, 12)
   legend:SetText(ns.CHECK .. " = on the guild Discord")
 
   frame:SetScript("OnShow", refresh)

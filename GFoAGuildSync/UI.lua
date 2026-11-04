@@ -30,8 +30,8 @@ local function statusLines()
     table.insert(lines, string.format("Officer mode: %d members synced, %d craft requests", ns.count(db.guildSync),
       type(db.craftRequests) == "table" and #db.craftRequests or 0))
   end
-  if ns.lastError then table.insert(lines, "|cffff6666Errors: " .. (ns.errorCount or 0) .. "|r") end
-  table.insert(lines, "|cff999999Saved on logout or /reload|r")
+  if ns.lastError then table.insert(lines, "|cffff8a8aErrors: " .. (ns.errorCount or 0) .. "|r") end
+  table.insert(lines, ns.ui.MUTED .. "Saved on logout or /reload|r")
   return table.concat(lines, "\n")
 end
 
@@ -44,7 +44,8 @@ end
 local function createStatusFrame()
   if statusFrame then return statusFrame end
   local f = CreateFrame("Frame", "GFoAGuildSyncStatusFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
-  f:SetSize(300, 290)
+  local W = ns.ui
+  f:SetSize(300, 298)
   f:SetFrameStrata("MEDIUM")
   f:SetClampedToScreen(true)
   f:SetMovable(true)
@@ -56,19 +57,7 @@ local function createStatusFrame()
     local point, _, relPoint, x, y = self:GetPoint()
     ns.settings.framePos = { point, relPoint, x, y }
   end)
-  if f.SetBackdrop then
-    f:SetBackdrop({
-      bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-      edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-      tile = true, tileSize = 16, edgeSize = 12,
-      insets = { left = 3, right = 3, top = 3, bottom = 3 },
-    })
-    f:SetBackdropColor(0.08, 0.05, 0.12, 0.9)
-  else
-    local bg = f:CreateTexture(nil, "BACKGROUND")
-    bg:SetAllPoints()
-    bg:SetColorTexture(0.08, 0.05, 0.12, 0.9)
-  end
+  W.backdrop(f, 0.92)
   local pos = ns.settings and ns.settings.framePos
   if type(pos) == "table" and pos[1] then
     f:SetPoint(pos[1], UIParent, pos[2] or pos[1], pos[3] or 0, pos[4] or 0)
@@ -76,9 +65,7 @@ local function createStatusFrame()
     f:SetPoint("CENTER", UIParent, "CENTER", 0, 200)
   end
 
-  local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  title:SetPoint("TOPLEFT", 10, -8)
-  title:SetText("GFoA Guild Sync")
+  W.header(f, "GFoA Guild Sync")
 
   local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
   close:SetPoint("TOPRIGHT", 2, 2)
@@ -88,13 +75,12 @@ local function createStatusFrame()
   end)
 
   statusText = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  statusText:SetPoint("TOPLEFT", 10, -28)
-  statusText:SetPoint("RIGHT", f, "RIGHT", -10, 0)
+  statusText:SetPoint("TOPLEFT", 12, -W.TOP)
+  statusText:SetPoint("RIGHT", f, "RIGHT", -12, 0)
   statusText:SetJustifyH("LEFT")
   if statusText.SetJustifyV then statusText:SetJustifyV("TOP") end
 
   -- Buttons: the other windows.
-  local W = ns.ui
   local buttons = {
     { "Guild", function() ns.toggleGuildWindow() end },
     { "Cooldowns", function() ns.toggleCooldowns() end },
@@ -153,17 +139,18 @@ local function createMinimapButton()
   b:SetFrameLevel(8)
   b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
   b:RegisterForDrag("LeftButton")
-  if b.SetHighlightTexture then b:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight") end
 
-  local icon = b:CreateTexture(nil, "BACKGROUND")
-  icon:SetTexture("Interface\\Icons\\INV_Misc_Note_02")
-  icon:SetSize(20, 20)
-  icon:SetPoint("CENTER", 0, 1)
-
-  local border = b:CreateTexture(nil, "OVERLAY")
-  border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
-  border:SetSize(53, 53)
-  border:SetPoint("TOPLEFT")
+  -- Our own round paw-sticker icon (Media/minimap.tga, 64x64 with alpha): no stock border needed.
+  local icon = b:CreateTexture(nil, "ARTWORK")
+  icon:SetTexture(ns.ui.TEX.minimap)
+  icon:SetAllPoints()
+  local glow = b:CreateTexture(nil, "HIGHLIGHT")
+  glow:SetTexture(ns.ui.TEX.minimap)
+  glow:SetAllPoints()
+  glow:SetBlendMode("ADD")
+  glow:SetAlpha(0.35)
+  b:SetScript("OnMouseDown", function() icon:SetSize(29, 29); icon:ClearAllPoints(); icon:SetPoint("CENTER") end)
+  b:SetScript("OnMouseUp", function() icon:ClearAllPoints(); icon:SetAllPoints() end)
 
   b:SetScript("OnClick", function(self, button)
     if button == "RightButton" then
@@ -187,10 +174,11 @@ local function createMinimapButton()
   b:SetScript("OnEnter", function(self)
     if not GameTooltip then return end
     GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-    GameTooltip:AddLine("GFoA Guild Sync")
+    local pink = ns.ui.C.pink
+    GameTooltip:AddLine("|T" .. ns.ui.TEX.paw .. ":14|t GFoA Guild Sync", pink[1], pink[2], pink[3])
     GameTooltip:AddLine(statusLines(), 1, 1, 1)
-    GameTooltip:AddLine("Left-click: menu. Right-click: guild window. Drag: move.", 0.6, 0.6, 0.6)
-    GameTooltip:AddLine("Alt+right-click an item: ask guild crafters.", 0.6, 0.6, 0.6)
+    GameTooltip:AddLine("Left-click: menu. Right-click: guild window. Drag: move.", 0.65, 0.62, 0.70)
+    GameTooltip:AddLine("Alt+right-click an item: ask guild crafters.", 0.65, 0.62, 0.70)
     GameTooltip:Show()
   end)
   b:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
