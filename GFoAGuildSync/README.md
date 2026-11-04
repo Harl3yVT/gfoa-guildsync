@@ -42,6 +42,12 @@ SavedVariables; it never acts for you, never types in chat and never edits guild
 
 ## Install
 
+Easiest: **WowUp** (beta channel 2.24+ knows WoW: Forever) > Get Addons > Install from URL >
+`https://github.com/Harl3yVT/gfoa-guildsync`, or **CurseForge** once the project is approved. Both update it for
+you. When a guildmate's addon is newer, `/gfoa` and the Options page say so (nothing pops up).
+
+By hand:
+
 1. Download the zip (green **Code** button > **Download ZIP**, or the release zip).
 2. Extract it and put the `GFoAGuildSync` folder in `World of Warcraft\_forever_\Interface\AddOns`
    (so you have `...\AddOns\GFoAGuildSync\GFoAGuildSync.toc`). The `sample` and `tests` folders can be left out.
@@ -52,7 +58,7 @@ SavedVariables; it never acts for you, never types in chat and never edits guild
 
 | Command | What it does |
 |---|---|
-| `/gfoa` | Status: roster scan, counts, XP/hour, Discord data, errors |
+| `/gfoa` | Status: roster scan, counts, XP/hour, Discord data, errors, "new version is out" |
 | `/gfoa guild` | Guild window (also: right-click the minimap button) |
 | `/gfoa cd` | Profession cooldowns: yours and guildmates' |
 | `/gfoa level` | Levelling buddy and guild race to 60 |
@@ -87,12 +93,14 @@ officer mode, and this character's Discord link status with **Show import code**
 
 - `GFoAGuildSyncDB` (account): guild roster, your characters (level, XP, professions, recipes, cooldowns, gear ids,
   attunement flags, money), dungeon runs, raids and loot. Officer mode only: what members' addons sent
-  (`guildSync`, 30 days) and craft requests (`craftRequests`, 7 days).
+  (`guildSync`, 30 days) and craft requests (`craftRequests`, 7 days). The highest addon version heard from
+  guildmates (`newestSeen`, version string only).
 - `GFoAGuildSyncCache` (account, never uploaded): reagents from your profession windows, guildmates' shared
   cooldowns, daily roster levels for the race to 60.
 - `GFoAGuildSyncSettings` (per character, never uploaded): options, window positions and **My stats**.
 - Hidden guild addon messages, at most one per second: your logged-in character for officers' addons (guild sync),
-  craft requests you click, and that character's profession cooldowns (only cooldown recipe names and time left).
+  craft requests you click, and that character's profession cooldowns (only cooldown recipe names and time left,
+  plus your addon version).
   Each can be turned off in the options.
 
 The Discord parts need the optional `GFoAGuildSyncBotData.lua` file in your account's SavedVariables folder plus the

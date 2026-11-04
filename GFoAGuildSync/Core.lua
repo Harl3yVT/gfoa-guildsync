@@ -6,7 +6,7 @@ local addonName, ns = ...
 
 ns.name = addonName or "GFoAGuildSync"
 ns.DB_VERSION = 1
-ns.ADDON_VERSION = "1.2.0"
+ns.ADDON_VERSION = "1.2.1"
 
 local frame = CreateFrame("Frame")
 ns.frame = frame
@@ -314,6 +314,8 @@ local function status()
   else
     ns.print("Discord data: none yet (optional; it arrives after you log out if the guild sync tool is set up)")
   end
+  local notice = ns.updateNotice and ns.updateNotice()
+  if notice then ns.print("|cffffd100" .. notice .. "|r") end
   if ns.lastError then
     ns.print(string.format("|cffff6666%d error(s), last: %s|r", ns.errorCount or 0, ns.lastError))
   end

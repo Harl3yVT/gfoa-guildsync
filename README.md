@@ -28,6 +28,12 @@ Full command list, options and what the addon saves: [GFoAGuildSync/README.md](G
 
 ## Install
 
+- **WowUp** (beta channel, 2.24 or newer knows WoW: Forever): Get Addons > **Install from URL** >
+  `https://github.com/Harl3yVT/gfoa-guildsync`. WowUp then updates it for you from new releases.
+- **CurseForge**: link coming once the project is approved. The CurseForge app updates it for you.
+- **By hand**: steps below. When a guildmate's addon is newer than yours, `/gfoa` and the Options page say so
+  (nothing pops up).
+
 1. Download `GFoAGuildSync-vX.Y.Z.zip` from the [latest release](../../releases/latest).
 2. Extract it into `World of Warcraft\_forever_\Interface\AddOns`, so you end up with
    `...\AddOns\GFoAGuildSync\GFoAGuildSync.toc`.
@@ -37,5 +43,9 @@ Type `/gfoa` in game to check it's running.
 
 ## Releases
 
-Pushing a tag `vX.Y.Z` that matches `## Version` in `GFoAGuildSync/GFoAGuildSync.toc` builds the zip (with the
-`GFoAGuildSync` folder at the zip root) and publishes the release.
+Pushing a tag `vX.Y.Z` that matches `## Version` in `GFoAGuildSync/GFoAGuildSync.toc` runs the
+[BigWigs packager](https://github.com/BigWigsMods/packager): it builds the zip (with the `GFoAGuildSync` folder at
+the zip root, see `.pkgmeta`) and publishes the GitHub release with a `release.json` for WowUp.
+
+To also upload to CurseForge, add the repo secret `CF_API_KEY` and a line `## X-Curse-Project-ID: <id>` to the
+.toc (Wago works the same way with `WAGO_API_TOKEN` and `## X-Wago-ID`); without them that upload is skipped.

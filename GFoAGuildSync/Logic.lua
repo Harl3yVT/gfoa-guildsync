@@ -662,4 +662,43 @@ function L.filterRoster(members, filter, discord)
   return kept
 end
 
+-- ---------------------------------------------------------------------------
+-- "New version is out" (1.2.1): versions heard from guildmates' addons. Only a version string is ever used.
+-- ---------------------------------------------------------------------------
+
+L.UPDATE_URL = "github.com/Harl3yVT/gfoa-guildsync"
+
+-- "1.2.3" -> { 1, 2, 3 }; nil for anything else (no prefixes, suffixes or parts over 4 digits).
+function L.parseVersion(s)
+  if type(s) ~= "string" or #s > 14 then return nil end
+  local a, b, c = string.match(s, "^(%d%d?%d?%d?)%.(%d%d?%d?%d?)%.(%d%d?%d?%d?)$")
+  if not a then return nil end
+  return { tonumber(a), tonumber(b), tonumber(c) }
+end
+
+-- -1 / 0 / 1 like a < b, a == b, a > b; nil when either is not a valid version.
+function L.compareVersions(a, b)
+  local va, vb = L.parseVersion(a), L.parseVersion(b)
+  if not va or not vb then return nil end
+  for i = 1, 3 do
+    if va[i] ~= vb[i] then return va[i] < vb[i] and -1 or 1 end
+  end
+  return 0
+end
+
+-- The record to keep after hearing `version` from `from`: { version, from, at } when it's newer than both ours
+-- and the one already kept, else `seen` unchanged (nil when `seen` is junk).
+function L.noteVersion(seen, version, from, now, mine)
+  local kept = type(seen) == "table" and L.parseVersion(seen.version) and seen or nil
+  if L.compareVersions(version, mine) ~= 1 then return kept end
+  if kept and L.compareVersions(version, kept.version) ~= 1 then return kept end
+  return { version = version, from = type(from) == "string" and string.sub(from, 1, 48) or nil, at = now }
+end
+
+-- One passive line when a newer version than ours was seen, else nil.
+function L.updateNotice(seen, mine)
+  if type(seen) ~= "table" or L.compareVersions(seen.version, mine) ~= 1 then return nil end
+  return seen.version .. " is out: update with WowUp or CurseForge, or " .. L.UPDATE_URL
+end
+
 return L

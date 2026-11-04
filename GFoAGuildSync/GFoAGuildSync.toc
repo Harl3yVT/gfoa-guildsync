@@ -2,7 +2,7 @@
 ## Title: GFoA Guild Sync
 ## Notes: Guild window with alts, guild crafters in tooltips, levelling buddy, guildie finder, cooldowns, pre-raid checklist and private stats for the Gay Furries of Azeroth. Data only, no automation, no pop-ups.
 ## Author: Gay Furries of Azeroth
-## Version: 1.2.0
+## Version: 1.2.1
 ## OptionalDeps: GFoAGuildSyncBotData
 ## SavedVariables: GFoAGuildSyncDB, GFoAGuildSyncCache
 ## SavedVariablesPerCharacter: GFoAGuildSyncSettings

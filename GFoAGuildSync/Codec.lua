@@ -566,10 +566,15 @@ function L.craftRequestMessage(msgId, itemId, item)
 end
 
 -- Encodes { { name, readyAt } } as a C message (at most maxBytes, whole entries only). now: current time.
-function L.cooldownMessage(list, now, maxBytes)
+-- version (1.2.1+): the sender's addon version as a leading "@1.2.1" entry; older addons skip it (no "=").
+function L.cooldownMessage(list, now, maxBytes, version)
   maxBytes = maxBytes or L.COMM_MAX_BYTES
   local msg = "C:"
   local first = true
+  if L.parseVersion(version) then
+    msg = msg .. "@" .. version
+    first = false
+  end
   for _, e in ipairs(list or {}) do
     if type(e.name) == "string" and not string.find(e.name, "[;=\r\n]") then
       local left = (e.readyAt or 0) - now
@@ -594,6 +599,13 @@ function L.parseCooldowns(body, now)
     end
   end
   return out
+end
+
+-- The sender's addon version from a C message body ("@1.2.1;..."), or nil.
+function L.cooldownVersion(body)
+  local v = string.match(type(body) == "string" and body or "", "^@([^;]*)")
+  if L.parseVersion(v) then return v end
+  return nil
 end
 
 local baseParse = L.parseMessage

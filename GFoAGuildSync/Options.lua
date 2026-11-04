@@ -21,6 +21,12 @@ local function createPanel()
   local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
   title:SetPoint("TOPLEFT", 16, -16)
   title:SetText("GFoA Guild Sync " .. ns.ADDON_VERSION)
+  -- Passive "new version is out" line next to the title (only when a guildmate's addon is newer).
+  local notice = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  notice:SetPoint("LEFT", title, "RIGHT", 12, 0)
+  notice:SetWidth(380)
+  notice:SetJustifyH("LEFT")
+  local function refreshNotice() notice:SetText(ns.updateNotice and ns.updateNotice() or "") end
   local sub = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
   sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
   sub:SetText("Settings are saved for this character. The addon only reads game data and never acts for you."
@@ -113,6 +119,7 @@ local function createPanel()
     refreshLoot()
     refreshOfficer()
     refreshLink()
+    refreshNotice()
   end)
   return panel
 end

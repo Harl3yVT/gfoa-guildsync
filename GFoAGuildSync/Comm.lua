@@ -5,6 +5,8 @@
 --   At most 1 message per second leaves this client.
 --   1.2.0 adds "Ask guild crafters" requests (R, only after the player clicks) and profession cooldown sharing
 --   (C / Q: the logged-in character's cooldown recipes and when they're ready, nothing else).
+--   1.2.1 puts the addon version first in C messages ("C:@1.2.1;...") and remembers the highest version heard
+--   (from C messages and officers' received payloads) for a passive "new version is out" line.
 local _, ns = ...
 local L = ns.logic
 
@@ -113,9 +115,21 @@ end
 -- Receiving
 -- ---------------------------------------------------------------------------
 
+-- Remembers the highest addon version heard from guildmates (shown only in /gfoa and on the Options page).
+function ns.heardVersion(version, from)
+  if not ns.db then return end
+  ns.db.newestSeen = L.noteVersion(ns.db.newestSeen, version, from, ns.now(), ns.ADDON_VERSION)
+end
+
+-- The passive "new version is out" line, or nil.
+function ns.updateNotice()
+  return ns.db and L.updateNotice(ns.db.newestSeen, ns.ADDON_VERSION)
+end
+
 local function store(sender, data, msgId)
   local payload = L.decodeExport(data)
   if not payload then return end
+  ns.heardVersion(payload.addon, sender)
   local _, kept = L.filterSender(payload, sender)
   if kept == 0 then return end
   ns.db.guildSync = type(ns.db.guildSync) == "table" and ns.db.guildSync or {}
@@ -190,7 +204,7 @@ local function sendCooldowns(force)
   if not ns.opt("shareCooldowns", true) or not ns.call("IsInGuild") or not registerPrefix() then return end
   local list = myCooldowns()
   if #list == 0 then return end
-  local msg = L.cooldownMessage(list, ns.now())
+  local msg = L.cooldownMessage(list, ns.now(), nil, ns.ADDON_VERSION)
   local sig = string.gsub(msg, "=%d+", function(v) return v == "=0" and "=0" or "=1" end)
   if not force and sig == lastCdSig then return end
   if force and ns.now() - lastCdSent < 600 then return end
@@ -259,6 +273,7 @@ local function onMessage(_, prefix, msg, channel, sender)
       ns.cache.peerCd = type(ns.cache.peerCd) == "table" and ns.cache.peerCd or {}
       ns.cache.peerCd[who] = { t = ns.now(), list = L.parseCooldowns(a, ns.now()) }
     end
+    ns.heardVersion(L.cooldownVersion(a), who)
     if ns.refreshCooldowns then ns.refreshCooldowns() end
   elseif kind == "Q" then
     ns.after(2 + math.random(0, 8), "cdReply", function() sendCooldowns(true) end)

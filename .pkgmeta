@@ -1,0 +1,8 @@
+package-as: GFoAGuildSync
+
+# The addon lives in GFoAGuildSync/ in this repo; put it at the zip root as GFoAGuildSync/.
+move-folders:
+  GFoAGuildSync/GFoAGuildSync: GFoAGuildSync
+
+ignore:
+  - README.md
