@@ -141,6 +141,44 @@ local function createPanel()
   end
   y = y - 22
 
+  -- Link code (account-wide): typed once, then every character registers itself through guild sync.
+  local codeLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+  codeLabel:SetPoint("TOPLEFT", 20, y - 3)
+  codeLabel:SetText("Link code:")
+  local codeBox = W.editBox(panel, 80)
+  if codeBox.SetMaxLetters then codeBox:SetMaxLetters(16) end
+  codeBox:SetPoint("LEFT", codeLabel, "RIGHT", 10, 0)
+  local codeStatus = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  local function refreshCode(err)
+    if err then
+      codeStatus:SetText(ns.CROSS .. " " .. W.WAIT .. err .. "|r")
+    elseif ns.db and ns.db.link then
+      codeStatus:SetText(ns.CHECK .. " " .. ns.linkLine())
+    else
+      codeStatus:SetText(W.MUTED .. ns.linkLine() .. "|r")
+    end
+  end
+  local saveCode = W.button(panel, "Save", 60, 20, function()
+    local ok, err = ns.setLink(codeBox:GetText() or "")
+    if ok then
+      codeBox:SetText("")
+      codeBox:ClearFocus()
+    end
+    refreshCode(not ok and err or nil)
+  end)
+  saveCode:SetPoint("LEFT", codeBox, "RIGHT", 6, 0)
+  codeBox:SetScript("OnEnterPressed", function() saveCode:Click() end)
+  local mainBtn = W.button(panel, "This is my main", 120, 20, function()
+    local ok, err = ns.setMain()
+    refreshCode(not ok and err or nil)
+  end)
+  mainBtn:SetPoint("LEFT", saveCode, "RIGHT", 8, 0)
+  y = y - 24
+  codeStatus:SetPoint("TOPLEFT", 20, y)
+  codeStatus:SetPoint("RIGHT", panel, "RIGHT", -16, 0)
+  codeStatus:SetJustifyH("LEFT")
+  y = y - 20
+
   local export = W.button(panel, "Show import code", 160, 22, function() ns.showExport() end)
   export:SetPoint("TOPLEFT", 20, y)
   local guild = W.button(panel, "Guild window", 110, 22, function() ns.toggleGuildWindow(true) end)
@@ -153,6 +191,7 @@ local function createPanel()
     refreshLoot()
     refreshOfficer()
     refreshLink()
+    refreshCode()
     refreshNotice()
   end)
   return panel

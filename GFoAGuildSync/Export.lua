@@ -82,7 +82,8 @@ end
 
 function ns.showExport()
   if ns.refreshCharacter then ns.refreshCharacter() end
-  local s, droppedOrReason = L.makeExport(ns.db.characters, ns.now(), ns.call("GetRealmName"), ns.ADDON_VERSION)
+  local s, droppedOrReason = L.makeExport(ns.db.characters, ns.now(), ns.call("GetRealmName"), ns.ADDON_VERSION,
+    { link = ns.db.link, main = ns.db.main })
   if not s then
     ns.print("export: " .. tostring(droppedOrReason))
     return

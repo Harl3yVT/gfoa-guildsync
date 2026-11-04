@@ -7,6 +7,8 @@
 --   (C / Q: the logged-in character's cooldown recipes and when they're ready, nothing else).
 --   1.2.1 puts the addon version first in C messages ("C:@1.2.1;...") and remembers the highest version heard
 --   (from C messages and officers' received payloads) for a passive "new version is out" line.
+--   1.4.0 adds the account's Discord link code and chosen main (top-level `link` / `main`, docs "Link codes") to the
+--   payload; officers keep them when they re-encode what they received.
 local _, ns = ...
 local L = ns.logic
 
@@ -77,10 +79,12 @@ local function buildPayload()
   local me = ns.call("UnitName", "player")
   local c = me and ns.db.characters[me]
   if type(c) ~= "table" then return nil end
-  local payload = L.exportPayload({ [me] = c }, ns.now(), ns.call("GetRealmName"), ns.ADDON_VERSION, true)
+  local extra = { link = ns.db.link, main = ns.db.main }
+  local payload = L.exportPayload({ [me] = c }, ns.now(), ns.call("GetRealmName"), ns.ADDON_VERSION, true, extra)
   local data = L.encodeExport(payload)
   if #data > L.EXPORT_MAX then
-    data = L.encodeExport(L.exportPayload({ [me] = c }, ns.now(), ns.call("GetRealmName"), ns.ADDON_VERSION, false))
+    data = L.encodeExport(L.exportPayload({ [me] = c }, ns.now(), ns.call("GetRealmName"), ns.ADDON_VERSION, false,
+      extra))
   end
   if #data > L.EXPORT_MAX then return nil end
   return data
@@ -132,6 +136,9 @@ local function store(sender, data, msgId)
   ns.heardVersion(payload.addon, sender)
   local _, kept = L.filterSender(payload, sender)
   if kept == 0 then return end
+  -- link / main stay in the re-encoded payload (the bot reads them); drop anything that isn't valid.
+  payload.link = L.normalizeLinkCode(payload.link)
+  payload.main = L.cleanMainName(payload.main)
   ns.db.guildSync = type(ns.db.guildSync) == "table" and ns.db.guildSync or {}
   ns.db.guildSync[sender] = { sender = sender, t = ns.now(), data = L.encodeExport(payload) }
   table.insert(queue, "A:" .. msgId)

@@ -231,8 +231,29 @@ local function exportChar(name, c, withRecipes)
   return e
 end
 
--- The JSON payload table for up to 10 own characters (most recently updated first).
-function L.exportPayload(characters, now, realm, addonVersion, withRecipes)
+-- Link codes (docs "Link codes"): 6 characters from an alphabet without look-alikes (no 0/O, 1/I/L).
+L.LINK_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+L.LINK_LENGTH = 6
+
+-- Normalises a typed code (case, spaces, dashes). Returns the code, or nil when it isn't one.
+function L.normalizeLinkCode(raw)
+  if type(raw) ~= "string" then return nil end
+  local code = string.upper(string.sub(string.gsub(raw, "[%s%-]", ""), 1, 16))
+  if #code ~= L.LINK_LENGTH or not string.match(code, "^[" .. L.LINK_ALPHABET .. "]+$") then return nil end
+  return code
+end
+
+-- A main character name as sent in the payload: a non-empty string of at most 48 bytes, else nil.
+function L.cleanMainName(raw)
+  if type(raw) ~= "string" then return nil end
+  local name = string.match(raw, "^%s*(.-)%s*$")
+  if name == "" or #name > 48 then return nil end
+  return name
+end
+
+-- The JSON payload table for up to 10 own characters (most recently updated first). `extra` (optional) adds the
+-- account's link code and chosen main as top-level `link` / `main` when they're set and valid.
+function L.exportPayload(characters, now, realm, addonVersion, withRecipes, extra)
   local names = {}
   for name, c in pairs(characters or {}) do
     if type(name) == "string" and type(c) == "table" then names[#names + 1] = name end
@@ -246,7 +267,12 @@ function L.exportPayload(characters, now, realm, addonVersion, withRecipes)
   for i = 1, math.min(L.EXPORT_MAX_CHARS, #names) do
     chars[#chars + 1] = exportChar(names[i], characters[names[i]], withRecipes)
   end
-  return { v = 1, t = now, realm = realm, addon = addonVersion, chars = chars }
+  local payload = { v = 1, t = now, realm = realm, addon = addonVersion, chars = chars }
+  if type(extra) == "table" then
+    payload.link = L.normalizeLinkCode(extra.link)
+    payload.main = L.cleanMainName(extra.main)
+  end
+  return payload
 end
 
 function L.encodeExport(payload)
@@ -255,12 +281,12 @@ function L.encodeExport(payload)
 end
 
 -- Returns exportString, droppedRecipes; or nil, reason when even without recipes it's too long / empty.
-function L.makeExport(characters, now, realm, addonVersion)
-  local payload = L.exportPayload(characters, now, realm, addonVersion, true)
+function L.makeExport(characters, now, realm, addonVersion, extra)
+  local payload = L.exportPayload(characters, now, realm, addonVersion, true, extra)
   if #payload.chars == 0 then return nil, "no characters saved yet" end
   local s = L.encodeExport(payload)
   if #s <= L.EXPORT_MAX then return s, false end
-  s = L.encodeExport(L.exportPayload(characters, now, realm, addonVersion, false))
+  s = L.encodeExport(L.exportPayload(characters, now, realm, addonVersion, false, extra))
   if #s <= L.EXPORT_MAX then return s, true end
   return nil, "too long even without recipes"
 end

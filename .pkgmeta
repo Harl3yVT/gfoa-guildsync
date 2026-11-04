@@ -1,8 +1,9 @@
 package-as: GFoAGuildSync
 
-# The addon lives in GFoAGuildSync/ in this repo; put it at the zip root as GFoAGuildSync/.
+# The addons live in GFoAGuildSync/ and GFoAGuildSyncBotData/ in this repo; put both at the zip root.
 move-folders:
   GFoAGuildSync/GFoAGuildSync: GFoAGuildSync
+  GFoAGuildSync/GFoAGuildSyncBotData: GFoAGuildSyncBotData
 
 ignore:
   - README.md

@@ -6,7 +6,7 @@ local addonName, ns = ...
 
 ns.name = addonName or "GFoAGuildSync"
 ns.DB_VERSION = 1
-ns.ADDON_VERSION = "1.3.0"
+ns.ADDON_VERSION = "1.4.0"
 
 local frame = CreateFrame("Frame")
 ns.frame = frame
@@ -224,6 +224,8 @@ function ns.newDB()
   return { version = ns.DB_VERSION }
 end
 
+-- GFoAGuildSyncDB also holds the account's Discord link code (`link`) and chosen main (`main`), set by /gfoa link and
+-- /gfoa main. initDB and prune leave them alone; /gfoa reset yes clears them with everything else.
 local function initDB()
   if type(GFoAGuildSyncDB) ~= "table" or GFoAGuildSyncDB.version ~= ns.DB_VERSION then
     GFoAGuildSyncDB = ns.newDB()
@@ -233,6 +235,8 @@ local function initDB()
   if type(db.characters) ~= "table" then db.characters = {} end
   if type(db.raids) ~= "table" then db.raids = {} end
   if type(db.loot) ~= "table" then db.loot = {} end
+  if db.link ~= nil then db.link = ns.logic.normalizeLinkCode(db.link) end
+  if db.main ~= nil then db.main = ns.logic.cleanMainName(db.main) end
   ns.db = db
 
   if type(GFoAGuildSyncSettings) ~= "table" then GFoAGuildSyncSettings = {} end
@@ -288,6 +292,46 @@ end)
 ns.every(3600, "prune", function() ns.prune() end)
 
 -- ---------------------------------------------------------------------------
+-- Discord link code (docs "Link codes"): typed once per WoW account, sent with every guild sync payload
+-- ---------------------------------------------------------------------------
+
+ns.LINK_HINT = "get your code from the guild Discord panel > Link game account"
+
+-- One line: "Linked: ABC123, main Thrall" or "Not linked: ...".
+function ns.linkLine()
+  local db = ns.db
+  if not db then return "not loaded yet" end
+  local main = db.main and (", main " .. db.main) or ", main not set (/gfoa main)"
+  if db.link then return "Linked: " .. db.link .. main end
+  return "Not linked: " .. ns.LINK_HINT .. main
+end
+
+-- Stores a typed code. Returns true, or false + reason. Sends this character to officers' addons straight away.
+function ns.setLink(raw)
+  local code = ns.logic.normalizeLinkCode(raw)
+  if not code then
+    return false, "that isn't a link code (6 letters/digits, e.g. ABC234); " .. ns.LINK_HINT
+  end
+  ns.db.link = code
+  if ns.sendSync then ns.sendSync("link") end
+  return true
+end
+
+function ns.clearLink()
+  ns.db.link = nil
+  if ns.sendSync then ns.sendSync("link") end
+end
+
+-- Makes the logged-in character the account's main.
+function ns.setMain()
+  local me = ns.logic.cleanMainName(ns.call("UnitName", "player"))
+  if not me then return false, "character name not available yet" end
+  ns.db.main = me
+  if ns.sendSync then ns.sendSync("link") end
+  return true
+end
+
+-- ---------------------------------------------------------------------------
 -- Slash commands
 -- ---------------------------------------------------------------------------
 
@@ -307,6 +351,7 @@ local function status()
     #db.raids, #db.loot, ns.lootMin(), raid and (", in raid " .. tostring(raid.zone)) or "",
     type(db.dungeons) == "table" and #db.dungeons or 0))
   if ns.xpStatusLine then ns.print(ns.xpStatusLine()) end
+  ns.print("Discord link: " .. ns.linkLine())
   local discord = ns.discordData()
   if discord then
     ns.print(string.format("Discord data: %d characters, %d crafted items (from %s)",
@@ -320,7 +365,8 @@ local function status()
     ns.print(string.format("|cffff6666%d error(s), last: %s|r", ns.errorCount or 0, ns.lastError))
   end
   ns.print("commands: /gfoa guild | cd | attune | dungeons | xp | level | finder | stats | chars | ask ITEM"
-    .. " | export | options | show | minimap | roster | lootmin N | alts | sync | officer | quest ID | reset")
+    .. " | export | link CODE | unlink | main | options | show | minimap | roster | lootmin N | alts | sync"
+    .. " | officer | quest ID | reset")
 end
 
 ns.commands[""] = status
@@ -328,6 +374,34 @@ ns.commands["status"] = status
 
 ns.commands["roster"] = function()
   if ns.refreshRoster then ns.refreshRoster(true) end
+end
+
+ns.commands["link"] = function(arg)
+  if not arg or arg == "" then
+    ns.print("Discord link: " .. ns.linkLine())
+    return
+  end
+  local ok, err = ns.setLink(arg)
+  if ok then
+    ns.print("Discord link saved for every character on this account: " .. ns.db.link
+      .. ". Your characters register themselves after their next guild sync.")
+  else
+    ns.print(err)
+  end
+end
+
+ns.commands["unlink"] = function()
+  ns.clearLink()
+  ns.print("Discord link code removed (characters already registered stay registered)")
+end
+
+ns.commands["main"] = function()
+  local ok, err = ns.setMain()
+  if ok then
+    ns.print(ns.db.main .. " is now your main" .. (ns.db.link and "" or " (also set a link code: /gfoa link CODE)"))
+  else
+    ns.print(err)
+  end
 end
 
 ns.commands["lootmin"] = function(arg)

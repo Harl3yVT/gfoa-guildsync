@@ -70,6 +70,9 @@ By hand:
 | `/gfoa ask ITEM` | Ask guild crafters for a shift-clicked item |
 | `/gfoa xp` | XP/hour, next level and time to 60 |
 | `/gfoa export` | Export your characters for the Discord ("Import from addon") |
+| `/gfoa link CODE` | Link this WoW account to your Discord (code from the guild Discord panel > Link game account); `/gfoa link` shows the status |
+| `/gfoa unlink` | Remove the link code |
+| `/gfoa main` | Make the logged-in character your main |
 | `/gfoa options` | Options page (also in Esc > Options > AddOns) |
 | `/gfoa show` | Toggle the small status window |
 | `/gfoa minimap` | Show or hide the minimap button |
@@ -87,18 +90,28 @@ Minimap button: left-click opens a menu of every window, right-click opens the g
 
 Esc > Options > AddOns > GFoA Guild Sync (per character): every tooltip line, the chat alt suffix, check marks,
 guild sync, Alt+right-click "Ask guild crafters", cooldown sharing, minimap button, status window, loot quality,
-officer mode, and this character's Discord link status with **Show import code**.
+officer mode, and this character's Discord link status with **Show import code**. The **Link code** box, **Save**
+and **This is my main** set the account-wide link code and main (same as `/gfoa link CODE` and `/gfoa main`).
+
+## Discord linking (1.4.0)
+
+Type `/gfoa link CODE` once (code from the guild Discord panel > **Link game account**). Every character on that WoW
+account then sends the code with its guild sync, and the bot registers it to you by itself: your main if you have
+none, else an alt. Log in on each character once. `/gfoa main` on your main tells the bot which one it is. A
+character already registered to someone else is never moved.
 
 ## What it saves and sends
 
 - `GFoAGuildSyncDB` (account): guild roster, your characters (level, XP, professions, recipes, cooldowns, gear ids,
   attunement flags, money), dungeon runs, raids and loot. Officer mode only: what members' addons sent
   (`guildSync`, 30 days) and craft requests (`craftRequests`, 7 days). The highest addon version heard from
-  guildmates (`newestSeen`, version string only).
+  guildmates (`newestSeen`, version string only). Your Discord link code and chosen main (`link`, `main`), which
+  also go out with guild sync and the export.
 - `GFoAGuildSyncCache` (account, never uploaded): reagents from your profession windows, guildmates' shared
   cooldowns, daily roster levels for the race to 60.
 - `GFoAGuildSyncSettings` (per character, never uploaded): options, window positions and **My stats**.
-- Hidden guild addon messages, at most one per second: your logged-in character for officers' addons (guild sync),
+- Hidden guild addon messages, at most one per second: your logged-in character, link code and main for officers'
+  addons (guild sync),
   craft requests you click, and that character's profession cooldowns (only cooldown recipe names and time left,
   plus your addon version).
   Each can be turned off in the options.
@@ -136,3 +149,5 @@ panel > Import from addon. Long exports come in parts ("Part 1/3"): paste each p
 9. `/gfoa attune`: checklist ticks Drakefire Amulet etc. when carried (open the bank once for banked items).
 10. `/gfoa chars`: link status per character; Show import code opens the export.
 11. Esc > Options > AddOns > GFoA Guild Sync: every checkbox works and survives `/reload`.
+12. `/gfoa link abc-234` says saved (`ABC234`); `/gfoa link` and `/gfoa` show it; `/gfoa link 0OO` says it isn't a
+    code; Options > Link code + Save does the same; This is my main sets `main`; `/gfoa unlink` clears it.
