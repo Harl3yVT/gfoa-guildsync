@@ -42,9 +42,8 @@ SavedVariables; it never acts for you, never types in chat and never edits guild
 
 ## Install
 
-Easiest: **WowUp** (beta channel 2.24+ knows WoW: Forever) > Get Addons > Install from URL >
-`https://github.com/Harl3yVT/gfoa-guildsync`, or **CurseForge** once the project is approved. Both update it for
-you. When a guildmate's addon is newer, `/gfoa` and the Options page say so (nothing pops up).
+Easiest: **CurseForge**: https://www.curseforge.com/wow/addons/gfoa-guild-sync (the CurseForge app, or
+**WowUp-CF** beta 2.24+ searching "GFoA Guild Sync"). Both update it for you. When a guildmate's addon is newer, `/gfoa` and the Options page say so (nothing pops up).
 
 By hand:
 

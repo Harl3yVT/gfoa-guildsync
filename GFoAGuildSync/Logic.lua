@@ -666,7 +666,7 @@ end
 -- "New version is out" (1.2.1): versions heard from guildmates' addons. Only a version string is ever used.
 -- ---------------------------------------------------------------------------
 
-L.UPDATE_URL = "github.com/Harl3yVT/gfoa-guildsync"
+L.UPDATE_URL = "curseforge.com/wow/addons/gfoa-guild-sync"
 
 -- "1.2.3" -> { 1, 2, 3 }; nil for anything else (no prefixes, suffixes or parts over 4 digits).
 function L.parseVersion(s)
