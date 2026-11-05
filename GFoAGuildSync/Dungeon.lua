@@ -8,11 +8,8 @@ local kills = {}   -- encounter id/name -> time counted (ENCOUNTER_END + BOSS_KI
 
 -- zone, instanceId when inside a party instance, else nil.
 local function partyInstance()
-  local inInstance, instanceType = ns.call("IsInInstance")
-  if not inInstance or instanceType ~= "party" then return nil end
-  local name, _, _, _, _, _, _, instanceId = ns.call("GetInstanceInfo")
-  if not name then name = ns.call("GetRealZoneText") or ns.call("GetZoneText") end
-  if not name then return nil end
+  local kind, name, _, instanceId = ns.instanceInfo()
+  if kind ~= "party" or type(name) ~= "string" then return nil end
   return name, instanceId or 0
 end
 
@@ -23,7 +20,8 @@ local function partyMembers()
   for i = 1, 4 do
     local unit = "party" .. i
     if ns.call("UnitExists", unit) then
-      local name, realm = ns.call("UnitName", unit)
+      local name, _, realm = ns.unitName(unit)   -- Forever: second value is a surname
+      name, realm = ns.plain(name), ns.plain(realm)   -- secret names are skipped
       if type(name) == "string" and name ~= "" and name ~= UNKNOWNOBJECT then
         local full = (type(realm) == "string" and realm ~= "") and (name .. "-" .. realm) or name
         table.insert(out, ns.shortName(full))
@@ -74,9 +72,11 @@ local function bossKilled(id, name)
 end
 
 ns.on("ENCOUNTER_END", function(_, id, name, _, _, success)
+  id, name = L.cleanEncounter(id, name, ns.isSecret)
+  success = ns.plain(success)
   if success == 1 or success == true then bossKilled(id, name) end
 end)
-ns.on("BOSS_KILL", function(_, id, name) bossKilled(id, name) end)
+ns.on("BOSS_KILL", function(_, id, name) bossKilled(L.cleanEncounter(id, name, ns.isSecret)) end)
 
 ns.on("PLAYER_ENTERING_WORLD", function() ns.after(3, "dungeonZone", check) end)
 ns.on("ZONE_CHANGED_NEW_AREA", function() ns.after(3, "dungeonZone", check) end)

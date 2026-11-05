@@ -5,16 +5,34 @@ local lastScan = 0
 local lastRequest = 0
 local restoreOffline = false
 
+-- Puts the player's "Show Offline Members" setting back if we turned it on.
+local function restoreShowOffline()
+  if restoreOffline then
+    restoreOffline = false
+    ns.call("SetGuildRosterShowOffline", false)
+  end
+end
+
+-- true while the player is looking at a Blizzard guild list (then their filter is left exactly as it is).
+local function guildListOpen()
+  for _, fname in ipairs({ "GuildFrame", "CommunitiesFrame" }) do
+    local f = _G[fname]
+    if f and f.IsVisible and f:IsVisible() then return true end
+  end
+  return false
+end
+
 local function requestRoster()
   local t = ns.now()
   if t - lastRequest < 10 then return end   -- the server throttles faster requests anyway
   lastRequest = t
   -- Offline members are only listed while "Show Offline Members" is on; turn it on for the scan and
-  -- put the player's setting back right after.
-  if ns.api("GetGuildRosterShowOffline") and ns.api("SetGuildRosterShowOffline") then
+  -- put the player's setting back right after (at the latest 30 s later, even if no scan happens).
+  if ns.api("GetGuildRosterShowOffline") and ns.api("SetGuildRosterShowOffline") and not guildListOpen() then
     if not ns.call("GetGuildRosterShowOffline") then
       ns.call("SetGuildRosterShowOffline", true)
       restoreOffline = true
+      ns.after(30, "rosterRestoreOffline", restoreShowOffline)
     end
   end
   if ns.api("C_GuildInfo.GuildRoster") then
@@ -52,8 +70,11 @@ local function scan()
     local name, rank, rankIndex, level, _, zone, note, officerNote, online, _, classFile =
       ns.call("GetGuildRosterInfo", i)
     if name then
+      local _, realm = ns.logic.splitName(name)
       local m = {
         name = ns.shortName(name),
+        fullName = string.match(string.match(name, "^([^%-]*)") or name, "^%s*(.-)%s*$"),
+        realm = realm,
         level = level,
         class = classFile,
         rank = rank,
@@ -70,12 +91,20 @@ local function scan()
     end
   end
 
-  if restoreOffline then
-    restoreOffline = false
-    ns.call("SetGuildRosterShowOffline", false)
-  end
+  restoreShowOffline()
 
   if #members == 0 then return end
+  -- Pick each own-realm name the way the bot does (registered "Minusculedog" for "Minuscule Dog").
+  local fulls = {}
+  for i, m in ipairs(members) do fulls[i] = m.fullName end
+  local names = ns.logic.rosterNames(fulls, ns.discordData and ns.discordData() or nil)
+  local kept = {}
+  for i, m in ipairs(members) do
+    if names[i] and (not m.realm or m.realm == ns.realmKey()) then m.name = names[i] end
+    m.realm = nil
+    if m.name then kept[#kept + 1] = m end
+  end
+  members = kept
   ns.db.guild = { name = guildName, updated = ns.now(), members = members }
   if ns.cache then
     ns.cache.levelHistory = type(ns.cache.levelHistory) == "table" and ns.cache.levelHistory or {}
@@ -95,7 +124,7 @@ local function scanThrottled()
   end
 end
 
--- force = true (from /gfoa roster): request now and scan on the next update, ignoring the throttle.
+-- force = true (from /gf roster): request now and scan on the next update, ignoring the throttle.
 function ns.refreshRoster(force)
   if not ns.call("IsInGuild") then
     if force then ns.print("this character is not in a guild") end

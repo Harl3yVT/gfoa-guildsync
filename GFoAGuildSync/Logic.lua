@@ -60,6 +60,32 @@ function L.etaSeconds(level, xp, xpMax, xpPerHour, maxLevel)
   return math.floor(L.xpToMax(level, xp, xpMax, maxLevel) / xpPerHour * 3600 + 0.5)
 end
 
+-- A sheet read while the game tears the unit down (logout or /reload): UnitLevel 1, UnitXPMax 0, GetMoney 0.
+-- Below the level cap the XP needed for the next level is never 0, so its level, XP and money are junk.
+function L.logoutGlitch(level, xpMax, maxLevel)
+  if xpMax ~= 0 then return false end
+  return type(level) ~= "number" or level < (maxLevel or L.MAX_LEVEL)
+end
+
+-- ---------------------------------------------------------------------------
+-- Names (WoW: Forever characters have a first name and a surname)
+-- ---------------------------------------------------------------------------
+
+-- WoW: Forever clients report interface 16xxx (GetBuildInfo's 4th value); Classic Era is 115xx.
+function L.isForeverInterface(v)
+  v = tonumber(v)
+  return v ~= nil and v >= 16000 and v < 20000
+end
+
+-- UnitName / UnitFullName return (name, second). The second value is the realm on Classic and Retail, but the
+-- SURNAME on Forever. Returns first, surname, realm (nil when missing).
+function L.splitUnitName(first, second, forever)
+  if type(first) ~= "string" or first == "" then return nil end
+  if type(second) ~= "string" or second == "" then second = nil end
+  if forever then return first, second, nil end
+  return first, nil, second
+end
+
 -- XP/hour as a whole number, or nil when the sample is shorter than minSeconds.
 function L.xpPerHour(gained, seconds, minSeconds)
   if type(gained) ~= "number" or type(seconds) ~= "number" or seconds <= 0 then return nil end
@@ -162,9 +188,65 @@ end
 -- Discord data (GFoAGuildSyncBotData, read only)
 -- ---------------------------------------------------------------------------
 
+-- WoW Forever's guild roster gives "Name Surname" (and "Name Surname-Realm" off-realm); the character is
+-- "Name". Returns (name, realm or nil) with the surname dropped, or nil for an empty/non-string name.
+function L.splitName(full)
+  if type(full) ~= "string" then return nil end
+  local base, realm = string.match(full, "^([^%-]*)%-(.*)$")
+  if not base then base = full end
+  base = string.match(base, "^%s*(%S+)")
+  if not base then return nil end
+  if realm == "" then realm = nil end
+  return base, realm
+end
+
 function L.stripRealm(name)
-  if type(name) ~= "string" then return nil end
-  return string.match(name, "^([^%-]+)") or name
+  return (L.splitName(name))
+end
+
+-- Names for a roster scan (same rule as the bot's sync.roster_names). `fulls` are roster names without realm
+-- ("Bimbo Girl", "Minuscule Dog"); `discord` is the bot data. A registered match (spaces removed, then first word)
+-- wins, the rest get the first word, else the joined form. Returns a list of names (false = skip).
+function L.rosterNames(fulls, discord)
+  local reg = {}
+  if type(discord) == "table" and type(discord.characters) == "table" then
+    for k in pairs(discord.characters) do
+      if type(k) == "string" then reg[string.lower(k)] = k end
+    end
+  end
+  local cands, out, taken = {}, {}, {}
+  for i, full in ipairs(fulls) do
+    local words = {}
+    if type(full) == "string" then
+      for w in string.gmatch(full, "%S+") do words[#words + 1] = w end
+    end
+    local c = {}
+    if #words > 1 then c[#c + 1] = table.concat(words) end
+    if #words > 0 then c[#c + 1] = words[1] end
+    cands[i] = c
+    out[i] = false
+  end
+  -- exact / space-removed matches first, then first-word matches
+  for k = 1, 2 do
+    for i, c in ipairs(cands) do
+      local n = c[k]
+      if not out[i] and n then
+        local low = string.lower(n)
+        if reg[low] and not taken[low] then out[i] = reg[low]; taken[low] = true end
+      end
+    end
+  end
+  for i, c in ipairs(cands) do
+    if not out[i] then
+      for j = #c, 1, -1 do
+        local low = string.lower(c[j])
+        if not taken[low] then
+          out[i] = c[j]; taken[low] = true; break
+        end
+      end
+    end
+  end
+  return out
 end
 
 local lowerIndex = setmetatable({}, { __mode = "k" })
@@ -623,7 +705,8 @@ function L.checklist(c, config, itemCount, maxLevel)
   table.insert(rows, { text = "Level " .. maxLevel, done = (c.level or 0) >= maxLevel })
   for _, a in ipairs(config and config.attunements or {}) do
     table.insert(rows, { text = a.name .. " attunement",
-      done = type(c.attunements) == "table" and c.attunements[a.name] == true })
+      done = type(c.attunements) == "table" and c.attunements[a.name] == true,
+      unknown = L.attunementPending(a) or nil })
   end
   for _, p in ipairs(config and config.preRaid or {}) do
     local have, known = false, false
@@ -699,6 +782,120 @@ end
 function L.updateNotice(seen, mine)
   if type(seen) ~= "table" or L.compareVersions(seen.version, mine) ~= 1 then return nil end
   return seen.version .. " is out: update with WowUp or CurseForge, or " .. L.UPDATE_URL
+end
+
+-- ---------------------------------------------------------------------------
+-- Forever readiness (1.5.2): instances, encounters, recipes, quest ids
+-- ---------------------------------------------------------------------------
+
+-- Instance type ("raid", "party", ...) or nil outside an instance. GetInstanceInfo's 2nd value wins; IsInInstance is
+-- the fallback for clients where GetInstanceInfo is missing or says nothing.
+function L.instanceType(giType, inInstance, iiType)
+  if type(giType) == "string" and giType ~= "" then
+    if giType == "none" then return nil end
+    return giType
+  end
+  if inInstance and type(iiType) == "string" and iiType ~= "none" and iiType ~= "" then return iiType end
+  return nil
+end
+
+-- Raid size: GetInstanceInfo's maxPlayers, else the first number in the difficulty name ("20 Player"), else nil.
+function L.raidSize(maxPlayers, difficultyName)
+  if type(maxPlayers) == "number" and maxPlayers > 0 then return maxPlayers end
+  if type(difficultyName) == "string" then
+    local n = tonumber(string.match(difficultyName, "(%d+)"))
+    if n and n > 0 then return n end
+  end
+  return nil
+end
+
+-- ENCOUNTER_START/END / BOSS_KILL arguments made safe to compare, concatenate, store and use as table keys:
+-- a "secret" value (isSecret(v) true) or a wrong type becomes nil. Returns id (number or nil), name (string or nil).
+function L.cleanEncounter(id, name, isSecret)
+  local function plain(v, want)
+    if isSecret and isSecret(v) then return nil end
+    if type(v) ~= want then return nil end
+    return v
+  end
+  id = plain(id, "number")
+  name = plain(name, "string")
+  if name == "" then name = nil end
+  return id, name
+end
+
+-- Index of a successful kill of the same boss (encounterId, else name) recorded within `window` seconds, or nil.
+-- Used so ENCOUNTER_END and BOSS_KILL (either order) give one kill. With neither id nor name (both were secret
+-- values) any kill in the window matches: two bosses dying within 30 s of each other doesn't happen.
+function L.findRecentKill(kills, id, name, now, window)
+  if type(kills) ~= "table" then return nil end
+  for i = #kills, 1, -1 do
+    local k = kills[i]
+    if type(k) == "table" and k.success and now - (k.t or 0) < (window or 30) then
+      if (id ~= nil and k.encounterId == id) or (id == nil and name ~= nil and k.name == name)
+          or (id == nil and name == nil) then return i end
+    end
+  end
+  return nil
+end
+
+L.UNKNOWN_BOSS = "Unknown boss"
+
+-- Name to save for a kill. The bot drops kills without a name, so a secret/missing name falls back to the name
+-- ENCOUNTER_START gave, then "Encounter <id>", then "Unknown boss".
+function L.killName(name, startName, id)
+  if type(name) == "string" and name ~= "" then return name end
+  if type(startName) == "string" and startName ~= "" then return startName end
+  if type(id) == "number" then return "Encounter " .. id end
+  return L.UNKNOWN_BOSS
+end
+
+-- True when the open trade skill window shows someone else's recipes (a linked or guild profession, or an NPC
+-- crafting order): those must not be saved as this character's recipes.
+function L.foreignTradeSkill(linked, guild, npc)
+  return (linked and true or false) or (guild and true or false) or (npc and true or false)
+end
+
+-- Profession name for the craft window (Classic Enchanting). The display skill line wins; the craft name is only
+-- trusted when it matches a known profession (hunters' Beast Training uses the same window). `profs` is the
+-- character's professions list ({ { name = ... } }) or nil when unknown.
+function L.craftProfession(displayLine, craftName, profs)
+  if type(displayLine) == "string" and displayLine ~= "" and displayLine ~= "UNKNOWN" then return displayLine end
+  if type(craftName) ~= "string" or craftName == "" or craftName == "UNKNOWN" then return nil end
+  if type(profs) ~= "table" or #profs == 0 then return craftName end
+  for _, p in ipairs(profs) do
+    if type(p) == "table" and p.name == craftName then return craftName end
+  end
+  return nil
+end
+
+-- "Enchanting 30, Tailoring 45" (sorted by profession), or nil when there are none.
+function L.recipeSummary(recipes)
+  if type(recipes) ~= "table" then return nil end
+  local parts = {}
+  for prof, list in pairs(recipes) do
+    if type(prof) == "string" and type(list) == "table" then table.insert(parts, prof .. " " .. #list) end
+  end
+  if #parts == 0 then return nil end
+  table.sort(parts)
+  return table.concat(parts, ", ")
+end
+
+-- An attunement whose quest ids aren't known yet (empty `quests`): shown as "?" and never read from the game.
+function L.attunementPending(a)
+  return type(a) ~= "table" or type(a.quests) ~= "table" or #a.quests == 0
+end
+
+-- Quest log rows for /gf questid: entry(i) returns title, isHeader, questId (any client). Headers and rows without
+-- an id are skipped. Returns { { id = n, title = s }, ... } in log order.
+function L.questLogRows(n, entry)
+  local out = {}
+  for i = 1, (type(n) == "number" and n or 0) do
+    local title, isHeader, id = entry(i)
+    if not isHeader and type(id) == "number" and id > 0 then
+      table.insert(out, { id = id, title = type(title) == "string" and title or "?" })
+    end
+  end
+  return out
 end
 
 return L

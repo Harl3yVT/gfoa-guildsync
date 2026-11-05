@@ -1,4 +1,4 @@
--- GFoA Guild Sync: /gfoa export -> "GFOA1.<crc32>.<base64 JSON>" of your own characters, shown in a selectable box
+-- GFoA Guild Sync: /gf export -> "GFOA1.<crc32>.<base64 JSON>" of your own characters, shown in a selectable box
 -- to copy into the guild Discord ("Import from addon"). Read only: copying is done by the player (Ctrl+A, Ctrl+C).
 local _, ns = ...
 local L = ns.logic

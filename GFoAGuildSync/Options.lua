@@ -84,6 +84,8 @@ local function createPanel()
   section("Sharing and windows")
   check("Send my character to officers' addons (guild sync)", "guildSync", true)
   check("Share my profession cooldowns with guildmates' addons", "shareCooldowns", true)
+  check("Share my stats totals for guild Discord leaderboards (no gold; off by default)", "statsShare", false,
+    function(v) if ns.setStatsSharing then ns.setStatsSharing(v) end end)
   -- These two keep their old setting names (minimapHidden / frameShown).
   place(W.check(panel, "Show minimap button", function() return not ns.settings.minimapHidden end,
     function(v) ns.toggleMinimap(v) end))
@@ -222,7 +224,7 @@ function ns.openOptions()
     pcall(InterfaceOptionsFrame_OpenToCategory, panel)
     return
   end
-  ns.print("options page not available in this client; use /gfoa commands")
+  ns.print("options page not available in this client; use /gf commands")
 end
 
 ns.commands["options"] = function() ns.openOptions() end

@@ -125,7 +125,8 @@ end
 
 local function placeMinimapButton()
   if not minimapButton or not Minimap then return end
-  local angle = math.rad(ns.settings.minimapAngle or 200)
+  -- Default bottom-right (315): the lower-left of the ring is where other addons' buttons pile up.
+  local angle = math.rad(ns.settings.minimapAngle or 315)
   local radius = ((Minimap.GetWidth and Minimap:GetWidth() or 140) / 2) + 5
   minimapButton:ClearAllPoints()
   minimapButton:SetPoint("CENTER", Minimap, "CENTER", math.cos(angle) * radius, math.sin(angle) * radius)
@@ -214,7 +215,14 @@ function ns.toggleMinimap(show)
 end
 
 ns.commands["show"] = function() ns.toggleFrame() end
-ns.commands["minimap"] = function()
+ns.commands["minimap"] = function(arg)
+  if arg == "reset" then
+    ns.settings.minimapAngle = nil
+    ns.toggleMinimap(true)
+    placeMinimapButton()
+    ns.print("minimap button moved back to its default spot (drag it to move it)")
+    return
+  end
   ns.toggleMinimap()
   ns.print("minimap button " .. (ns.settings.minimapHidden and "hidden" or "shown"))
 end

@@ -16,13 +16,30 @@ function ns.isRegistered(name) return L.isRegistered(ns.discordData(), name) end
 -- Tooltips
 -- ---------------------------------------------------------------------------
 
-local added = setmetatable({}, { __mode = "k" })   -- tooltip -> text already added since the last clear
+local added = setmetatable({}, { __mode = "k" })         -- tooltip -> text already added since the last clear
+local clearHooked = setmetatable({}, { __mode = "k" })   -- tooltips whose OnTooltipCleared resets `added`
 
+-- Some clients announce the same item twice for one tooltip (post-call and script), so a line is added once per
+-- clear. TooltipDataProcessor also reaches tooltips we never hooked (other addons' tooltips): hook their clear on
+-- first sight, and when a tooltip can't tell us it was cleared, don't dedupe it at all.
 local function addOnce(tt, key, fn)
-  if added[tt] == key then return end
-  added[tt] = key
+  if not clearHooked[tt] and tt.HasScript and tt.HookScript and tt:HasScript("OnTooltipCleared") then
+    tt:HookScript("OnTooltipCleared", function(self) added[self] = nil end)
+    clearHooked[tt] = true
+  end
+  if clearHooked[tt] then
+    if added[tt] == key then return end
+    added[tt] = key
+  end
   fn()
   if tt.Show then tt:Show() end   -- resize to fit the new line
+end
+
+-- Forbidden tooltips (Blizzard-only frames) error on any method call; leave them alone.
+local function usable(tt)
+  if not tt then return false end
+  if tt.IsForbidden and tt:IsForbidden() then return false end
+  return true
 end
 
 -- Crafter indexes (own characters, and officer-mode guild sync payloads), rebuilt only when their data changes.
@@ -70,7 +87,7 @@ local function itemIdOf(link)
 end
 
 local function itemTooltip(tt)
-  if not tt or not tt.GetItem then return end
+  if not usable(tt) or not tt.GetItem then return end
   local name, link = tt:GetItem()
   if type(name) ~= "string" or name == "" or ns.isSecret(name) then return end
   local lines = {}
@@ -107,12 +124,12 @@ local function itemTooltip(tt)
 end
 
 local function unitTooltip(tt)
-  if not ns.opt("tooltipUnit", true) or not tt or not tt.GetUnit then return end
+  if not ns.opt("tooltipUnit", true) or not usable(tt) or not tt.GetUnit then return end
   local discord = ns.discordData()
   if not discord then return end
   local _, unit = tt:GetUnit()
   if not unit or ns.isSecret(unit) or not ns.call("UnitIsPlayer", unit) then return end
-  local name, realm = ns.call("UnitName", unit)
+  local name, _, realm = ns.unitName(unit)   -- on Forever the second value is a surname, not a realm
   if type(name) ~= "string" or ns.isSecret(name) then return end
   if type(realm) == "string" and realm ~= "" and realm ~= ns.realmKey() then return end   -- discord names have no realm
   local e = L.memberEntry(discord, name)
@@ -138,29 +155,35 @@ end
 
 local function hookTooltips()
   local itemFn, unitFn = safeHook("tooltipItem", itemTooltip), safeHook("tooltipUnit", unitTooltip)
+  ns.tooltipMode = "none"
   -- Modern client API (retail 10.0.2+, and possibly Forever).
   if type(TooltipDataProcessor) == "table" and type(TooltipDataProcessor.AddTooltipPostCall) == "function"
       and type(Enum) == "table" and type(Enum.TooltipDataType) == "table" then
     local ok = pcall(TooltipDataProcessor.AddTooltipPostCall, Enum.TooltipDataType.Item, itemFn)
     pcall(TooltipDataProcessor.AddTooltipPostCall, Enum.TooltipDataType.Unit, unitFn)
-    ns.tooltipMode = ok and "TooltipDataProcessor" or "none"
-  else
-    -- Classic-style scripts.
-    ns.tooltipMode = "OnTooltipSetItem"
-    for _, tname in ipairs({ "GameTooltip", "ItemRefTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }) do
-      local tt = _G[tname]
-      if tt and tt.HasScript and tt.HookScript then
-        if tt:HasScript("OnTooltipSetItem") then tt:HookScript("OnTooltipSetItem", itemFn) end
-        if tt:HasScript("OnTooltipSetUnit") then tt:HookScript("OnTooltipSetUnit", unitFn) end
+    if ok then ns.tooltipMode = "TooltipDataProcessor" end
+  end
+  -- Classic-style scripts too, wherever the tooltip still has them: some classic clients expose
+  -- TooltipDataProcessor while their own tooltips only fire these (Questie checks for the same thing). addOnce
+  -- keeps it to one line when both fire.
+  local scripts = false
+  for _, tname in ipairs({ "GameTooltip", "ItemRefTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }) do
+    local tt = _G[tname]
+    if tt and tt.HasScript and tt.HookScript then
+      if tt:HasScript("OnTooltipSetItem") then
+        tt:HookScript("OnTooltipSetItem", itemFn)
+        scripts = true
+      end
+      if tt:HasScript("OnTooltipSetUnit") then tt:HookScript("OnTooltipSetUnit", unitFn) end
+      -- Forget what we added when a tooltip is cleared, so the next item gets its line again.
+      if tt:HasScript("OnTooltipCleared") and not clearHooked[tt] then
+        tt:HookScript("OnTooltipCleared", function(self) added[self] = nil end)
+        clearHooked[tt] = true
       end
     end
   end
-  -- Forget what we added when a tooltip is cleared, so the next item gets its line again.
-  for _, tname in ipairs({ "GameTooltip", "ItemRefTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }) do
-    local tt = _G[tname]
-    if tt and tt.HasScript and tt.HookScript and tt:HasScript("OnTooltipCleared") then
-      tt:HookScript("OnTooltipCleared", function(self) added[self] = nil end)
-    end
+  if scripts then
+    ns.tooltipMode = (ns.tooltipMode == "none") and "OnTooltipSetItem" or (ns.tooltipMode .. "+OnTooltipSetItem")
   end
 end
 
@@ -219,14 +242,21 @@ local function openAskMenu(link)
     table.insert(items, { text = "|cff999999Can craft: " .. L.formatCrafters(list, 3) .. "|r", func = function() end })
   end
   table.insert(items, { text = "Cancel", func = function() end })
-  ns.ui.popup(cursorAnchor, items)
+  ns.ui.popup(cursorAnchor, items, true)   -- another Alt+right-click shows the new item instead of just closing
 end
 
 local function onModifiedClick(link)
   if not ns.opt("askAltClick", true) or type(link) ~= "string" or not string.find(link, "item:", 1, true) then return end
-  if not ns.call("IsAltKeyDown") then return end
+  -- Plain Alt only: RXPGuides can toggle junk with Ctrl+Alt+right-click, and Shift/Ctrl clicks are chat links,
+  -- stack splitting and the dressing room.
+  if not ns.call("IsAltKeyDown") or ns.call("IsShiftKeyDown") or ns.call("IsControlKeyDown") then return end
   local button = ns.call("GetMouseButtonClicked")
   if button and button ~= "RightButton" then return end
+  -- At the auction house Auctionator can be set to pick bag items with Alt+right-click: leave that click to it.
+  for _, fname in ipairs({ "AuctionFrame", "AuctionHouseFrame" }) do
+    local f = _G[fname]
+    if f and f.IsShown and f:IsShown() then return end
+  end
   if not ns.call("IsInGuild") then return end
   openAskMenu(link)
 end
@@ -237,12 +267,12 @@ local function hookAsk()
   end
 end
 
--- /gfoa ask <shift-clicked item link>
+-- /gf ask <shift-clicked item link>
 ns.commands["ask"] = function(arg)
   local itemId = itemIdOf(arg)
   local name = type(arg) == "string" and string.match(arg, "%[(.-)%]")
   if not itemId or not name then
-    ns.print("usage: /gfoa ask <shift-click an item into the chat box>, or Alt+right-click the item")
+    ns.print("usage: /gf ask <shift-click an item into the chat box>, or Alt+right-click the item")
     return
   end
   local ok, reason = ns.askCrafters(itemId, name)

@@ -9,6 +9,7 @@ local function readXP()
   local level = ns.call("UnitLevel", "player")
   local xp, max = ns.call("UnitXP", "player"), ns.call("UnitXPMax", "player")
   if type(level) ~= "number" or type(xp) ~= "number" or type(max) ~= "number" then return nil end
+  if L.logoutGlitch(level, max) then return nil end   -- logout / reload teardown read (level 1, 0 / 0)
   return level, xp, max
 end
 
@@ -63,7 +64,7 @@ local function sample()
   if ns.updateUI then ns.updateUI() end
 end
 
--- One line for /gfoa and the status window.
+-- One line for /gf and the status window.
 function ns.xpStatusLine()
   if not session then return "XP/hour: starting" end
   local level, xp, max = readXP()

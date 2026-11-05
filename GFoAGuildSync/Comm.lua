@@ -1,5 +1,5 @@
 -- GFoA Guild Sync: guild addon sync (members' addons -> officer addons), automatic, hidden addon messages only.
---   Every addon sends its logged-in character (same payload as /gfoa export) on the GUILD addon channel on login,
+--   Every addon sends its logged-in character (same payload as /gf export) on the GUILD addon channel on login,
 --   level-up, profession change and in reply to an officer hello. Officer-mode addons store what they receive in
 --   GFoAGuildSyncDB.guildSync. Addon messages are invisible to players; nothing is ever typed into chat.
 --   At most 1 message per second leaves this client.
@@ -30,7 +30,7 @@ function ns.canViewOfficerNote()
   return false
 end
 
--- /gfoa officer on|off overrides; otherwise on when this character can read officer notes.
+-- /gf officer on|off overrides; otherwise on when this character can read officer notes.
 function ns.officerMode()
   local v = ns.settings and ns.settings.officerMode
   if v == true or v == false then return v end
@@ -119,7 +119,7 @@ end
 -- Receiving
 -- ---------------------------------------------------------------------------
 
--- Remembers the highest addon version heard from guildmates (shown only in /gfoa and on the Options page).
+-- Remembers the highest addon version heard from guildmates (shown only in /gf and on the Options page).
 function ns.heardVersion(version, from)
   if not ns.db then return end
   ns.db.newestSeen = L.noteVersion(ns.db.newestSeen, version, from, ns.now(), ns.ADDON_VERSION)
@@ -313,7 +313,7 @@ ns.commands["officer"] = function(arg)
   elseif arg == "auto" then
     ns.settings.officerMode = nil
   else
-    ns.print("usage: /gfoa officer on | off | auto (auto = on when you can read officer notes)")
+    ns.print("usage: /gf officer on | off | auto (auto = on when you can read officer notes)")
   end
   ns.print(ns.syncStatus())
   if ns.officerMode() then

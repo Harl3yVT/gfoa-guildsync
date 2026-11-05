@@ -1,4 +1,4 @@
--- GFoA Guild Sync: guild window (/gfoa guild). The last roster scan with class colours, filters and sorting, plus
+-- GFoA Guild Sync: guild window (/gf guild). The last roster scan with class colours, filters and sorting, plus
 -- a check mark for members registered on Discord and "alt of" from the guild's Discord data, a role filter and
 -- an optional "group alts under their main" view. Display only.
 local _, ns = ...

@@ -235,7 +235,8 @@ end
 -- ---------------------------------------------------------------------------
 
 local popup
-function W.popup(anchor, items)
+-- noToggle: always (re)open with these items, instead of closing when opened again from the same anchor.
+function W.popup(anchor, items, noToggle)
   if not popup then
     popup = CreateFrame("Frame", "GFoAGuildSyncPopup", UIParent, BACKDROP_TEMPLATE)
     popup:SetFrameStrata("DIALOG")
@@ -245,7 +246,7 @@ function W.popup(anchor, items)
     popup.buttons = {}
     if type(UISpecialFrames) == "table" then table.insert(UISpecialFrames, "GFoAGuildSyncPopup") end
   end
-  if popup:IsShown() and popup.anchor == anchor then
+  if not noToggle and popup:IsShown() and popup.anchor == anchor then
     popup:Hide()
     return
   end

@@ -199,7 +199,8 @@ L.EXPORT_MAX_CHARS = 10
 local function exportChar(name, c, withRecipes)
   local e = {
     n = name, lvl = c.level, cls = c.class, race = c.race, fac = c.faction, guild = c.guild,
-    xp = c.xp, xpMax = c.xpMax,
+    xp = c.xp, xpMax = c.xpMax, sn = c.surname,
+    st = type(c.sharedStats) == "table" and c.sharedStats or nil,   -- opt-in shared stats (docs "Shared stats")
   }
   if type(c.talents) == "table" then
     local tal = L.jsonArray()

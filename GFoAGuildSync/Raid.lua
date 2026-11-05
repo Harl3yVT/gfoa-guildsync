@@ -18,12 +18,11 @@ local function inRaidGroup()
 end
 
 -- zone, instanceId, size when inside a raid instance, else nil.
+-- Works for WoW: Forever's 10 (Barrow Deeps), 20 (Hyjal Summit) and 40 (Onyxia's Lair) player raids alike.
 local function raidInstance()
-  local inInstance, instanceType = ns.call("IsInInstance")
-  if not inInstance or instanceType ~= "raid" then return nil end
-  local name, _, _, _, maxPlayers, _, _, instanceId = ns.call("GetInstanceInfo")
-  if not name then name = ns.call("GetRealZoneText") or ns.call("GetZoneText") end
-  return name, instanceId, maxPlayers
+  local kind, name, maxPlayers, instanceId, difficultyName = ns.instanceInfo()
+  if kind ~= "raid" or type(name) ~= "string" then return nil end
+  return name, instanceId, ns.logic.raidSize(maxPlayers, difficultyName)
 end
 
 function ns.currentRaid()
@@ -39,8 +38,10 @@ local function raidMembers()
   local n = ns.call("GetNumGroupMembers") or ns.call("GetNumRaidMembers") or 0
   for i = 1, n do
     local name, _, _, _, _, _, _, online = ns.call("GetRaidRosterInfo", i)
-    if name and online ~= false then
-      table.insert(out, ns.shortName(name))
+    name = ns.plain(name)   -- a secret name (restricted context) is skipped, never compared
+    if type(name) == "string" and online ~= false then
+      local short = ns.shortName(name)
+      if short then table.insert(out, short) end
     end
   end
   table.sort(out)
@@ -113,7 +114,18 @@ local function snapshot(force)
   if ns.updateUI then ns.updateUI() end
 end
 
+-- Midnight-style clients (12.0+, and WoW: Forever 1.6x, which Details! treats the same way) don't give addons the
+-- combat log; never try to register it there (deaths are then simply not recorded).
+local COMBAT_LOG_OK = true
+do
+  local toc = select(4, ns.call("GetBuildInfo"))
+  if type(toc) == "number" and (toc >= 120000 or ns.logic.isForeverInterface(toc)) then COMBAT_LOG_OK = false end
+end
+ns.combatLogOff = not COMBAT_LOG_OK   -- for /gf api
+local getCombatLogEvent = ns.api("CombatLogGetCurrentEventInfo")   -- looked up once, not on every combat log event
+
 local function updateCombatLog()
+  if not COMBAT_LOG_OK then return end
   if active then
     ns.reregister("COMBAT_LOG_EVENT_UNFILTERED")
   else
@@ -135,10 +147,21 @@ local function recordKill(id, name, success, duration, deaths)
   if not active then return end
   active.kills = active.kills or {}
   local t = ns.now()
+  -- ENCOUNTER_END and BOSS_KILL both fire for one kill, in either order: keep one entry, fill in what's missing.
+  local i = success and ns.logic.findRecentKill(active.kills, id, name, t, 30)
+  if i then
+    local k = active.kills[i]
+    k.encounterId = k.encounterId or id
+    if name and k.name == ns.logic.UNKNOWN_BOSS then k.name = name end
+    k.duration = k.duration or duration
+    if #(k.deaths or {}) == 0 then k.deaths = deaths or {} end
+    lastKill[id or name or "?"] = t
+    return
+  end
   table.insert(active.kills, {
     t = t,
     encounterId = id,
-    name = name,
+    name = ns.logic.killName(name, nil, id),
     success = success and true or false,
     duration = duration,
     members = raidMembers(),
@@ -147,21 +170,27 @@ local function recordKill(id, name, success, duration, deaths)
   if success then lastKill[id or name or "?"] = t end
 end
 
+-- Encounter ids/names may be secret values on Midnight-style clients: ns.logic.cleanEncounter turns those into nil.
 ns.on("ENCOUNTER_START", function(_, id, name)
+  id, name = ns.logic.cleanEncounter(id, name, ns.isSecret)
   encounter = { id = id, name = name, start = ns.now(), deaths = {} }
   snapshot(true)
 end)
 
 ns.on("ENCOUNTER_END", function(_, id, name, _, _, success)
+  id, name = ns.logic.cleanEncounter(id, name, ns.isSecret)
+  success = ns.plain(success)
   local e = encounter
   encounter = nil
   local start = e and e.start
   local deaths = e and e.deaths or {}
+  if not name and e and (id == nil or e.id == id) then name = e.name end   -- END's name was secret, START's wasn't
   recordKill(id, name, success == 1 or success == true, start and (ns.now() - start) or nil, deaths)
 end)
 
 -- Fallback for clients that only fire BOSS_KILL.
 ns.on("BOSS_KILL", function(_, id, name)
+  id, name = ns.logic.cleanEncounter(id, name, ns.isSecret)
   local key = id or name or "?"
   if lastKill[key] and ns.now() - lastKill[key] < 30 then return end   -- ENCOUNTER_END already did it
   local c = combat
@@ -186,11 +215,11 @@ local function isGroupPlayer(guid, flags)
   return true
 end
 
-ns.on("COMBAT_LOG_EVENT_UNFILTERED", function(_, ...)
+local function onCombatLog(_, ...)
   if not active then return end
   local _, sub, _, _, _, _, _, destGUID, destName, destFlags
-  if ns.api("CombatLogGetCurrentEventInfo") then
-    _, sub, _, _, _, _, _, destGUID, destName, destFlags = CombatLogGetCurrentEventInfo()
+  if getCombatLogEvent then
+    _, sub, _, _, _, _, _, destGUID, destName, destFlags = getCombatLogEvent()
   else
     _, sub, _, _, _, _, _, destGUID, destName, destFlags = ...
   end
@@ -199,8 +228,11 @@ ns.on("COMBAT_LOG_EVENT_UNFILTERED", function(_, ...)
   if not name then return end
   local bucket = (encounter and encounter.deaths) or (combat and combat.deaths)
   if bucket then table.insert(bucket, name) end
-end)
-ns.unregister("COMBAT_LOG_EVENT_UNFILTERED")   -- only listened to inside raid instances
+end
+if COMBAT_LOG_OK then
+  ns.on("COMBAT_LOG_EVENT_UNFILTERED", onCombatLog)
+  ns.unregister("COMBAT_LOG_EVENT_UNFILTERED")   -- only listened to inside raid instances
+end
 
 -- ---------------------------------------------------------------------------
 -- Loot (CHAT_MSG_LOOT, patterns built from the client's LOOT_ITEM* strings)
@@ -265,7 +297,7 @@ local function parseLoot(msg)
 end
 
 ns.on("CHAT_MSG_LOOT", function(_, msg)
-  if type(msg) ~= "string" then return end
+  if type(msg) ~= "string" or ns.isSecret(msg) then return end   -- secret in restricted instances: skip quietly
   local zone = raidInstance()
   if not zone then return end
   local player, link = parseLoot(msg)

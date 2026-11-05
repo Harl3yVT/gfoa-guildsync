@@ -2,16 +2,21 @@
 local _, ns = ...
 
 ns.config = {
-  -- Attunements: a character counts as attuned when ANY of the listed quest ids is completed.
-  -- These are Classic Era quest ids; WoW: Forever ids must be confirmed in game
-  -- (/gfoa quest <id> prints whether the current character has that quest flagged).
+  -- Attunements: THE one table to edit when quest ids are confirmed. A character counts as attuned when ANY of the
+  -- listed quest ids is completed. An entry with an empty `quests` list is a placeholder: it shows "?" and is never
+  -- checked. Find ids in game: pick up / finish the quest, then `/gf questid` lists the ids in your quest log and
+  -- `/gf quest <id>` says whether this character has that id flagged completed. See docs/forever-test-checklist.md.
   attunements = {
+    -- Classic Era ids (correct on Classic Era; confirm they're the same on WoW: Forever).
     { name = "Onyxia", quests = { 6502, 6602 } },         -- Drakefire Amulet (A) / Blood of the Black Dragon Champion (H)
     { name = "Molten Core", quests = { 7848 } },          -- Attunement to the Core
     { name = "Blackwing Lair", quests = { 7761 } },       -- Blackhand's Command
+    -- WoW: Forever raids (open 2026-12-09). Ids unknown until the quests exist in game; leave {} until confirmed.
+    { name = "Barrow Deeps", quests = {} },               -- 10-player; may have no attunement at all
+    { name = "Hyjal Summit", quests = {} },               -- 20-player; may have no attunement at all
   },
 
-  -- Default minimum loot quality to record (0 poor .. 3 rare, 4 epic, 5 legendary). /gfoa lootmin N changes it.
+  -- Default minimum loot quality to record (0 poor .. 3 rare, 4 epic, 5 legendary). /gf lootmin N changes it.
   lootMinQuality = 4,
 
   -- Raid and loot history older than this many days is pruned.

@@ -1,5 +1,5 @@
 -- GFoA Guild Sync: small info windows. All are opt-in (opened by the player from the minimap menu, status window,
--- options page or a /gfoa command) and only show information; nothing pops up by itself.
+-- options page or a /gf command) and only show information; nothing pops up by itself.
 --   Profession cooldowns (yours + guildmates who share theirs), Attunements + pre-raid checklist, Dungeon runs,
 --   Levelling (levelling buddy + guild race to 60), Guildie finder, My stats (private), My characters (Discord link).
 local _, ns = ...
@@ -137,7 +137,9 @@ local attunements = makeListWindow("GFoAGuildSyncAttuneFrame", "Attunements and 
       local parts = {}
       for _, a in ipairs(ns.config.attunements or {}) do
         local done = type(c.attunements) == "table" and c.attunements[a.name]
-        table.insert(parts, (done and ns.CHECK or ns.CROSS) .. " " .. a.name)
+        local mark = done and ns.CHECK or ns.CROSS
+        if not done and L.attunementPending(a) then mark = ns.ui.MUTED .. "?|r" end   -- quest id not set yet
+        table.insert(parts, mark .. " " .. a.name)
       end
       table.insert(lines, charLabel(name, c) .. "  " .. table.concat(parts, "  "))
     end

@@ -6,7 +6,7 @@ local addonName, ns = ...
 
 ns.name = addonName or "GFoAGuildSync"
 ns.DB_VERSION = 1
-ns.ADDON_VERSION = "1.4.0"
+ns.ADDON_VERSION = "1.5.2"
 
 local frame = CreateFrame("Frame")
 ns.frame = frame
@@ -29,7 +29,7 @@ function ns.print(msg)
   end
 end
 
--- Calls fn(...) and never lets an error escape. The last error is kept for /gfoa.
+-- Calls fn(...) and never lets an error escape. The last error is kept for /gf.
 function ns.safe(label, fn, ...)
   local ok, err = pcall(fn, ...)
   if not ok then
@@ -68,12 +68,26 @@ function ns.realmKey()
   return realm
 end
 
--- "Name-Realm" -> "Name" when the realm is the player's own realm.
+-- True on a WoW: Forever client (there UnitName's second value is the surname, not the realm).
+function ns.isForever()
+  if ns.foreverCached == nil then
+    local _, _, _, interface = ns.call("GetBuildInfo")
+    ns.foreverCached = ns.logic.isForeverInterface(interface) and true or false
+  end
+  return ns.foreverCached
+end
+
+-- UnitName(unit) as first, surname, realm (surname only on Forever, realm only elsewhere).
+function ns.unitName(unit)
+  local a, b = ns.call("UnitName", unit)
+  return ns.logic.splitUnitName(ns.plain(a), ns.plain(b), ns.isForever())   -- secret names count as missing
+end
+
+-- "Name Surname-Realm" -> "Name" (own realm) or "Name-Realm"; Forever's roster adds a surname.
 function ns.shortName(full)
-  if type(full) ~= "string" or full == "" then return nil end
-  local name, realm = string.match(full, "^([^%-]+)%-(.+)$")
-  if not name then return full end
-  if realm == "" or realm == ns.realmKey() then return name end
+  local name, realm = ns.logic.splitName(full)
+  if not name then return nil end
+  if not realm or realm == ns.realmKey() then return name end
   return name .. "-" .. realm
 end
 
@@ -112,6 +126,25 @@ function ns.isSecret(v)
     return ok and r and true or false
   end
   return false
+end
+
+-- v, or nil when v is a secret value (safe to compare, concatenate, store and use as a table key afterwards).
+function ns.plain(v)
+  if ns.isSecret(v) then return nil end
+  return v
+end
+
+-- Instance info as instanceType ("raid", "party", ... or nil outside), name, maxPlayers, instanceId, difficultyName.
+-- GetInstanceInfo first (its type is what WoW: Forever's 10/20/40 raids report), IsInInstance as the fallback.
+function ns.instanceInfo()
+  local name, giType, _, difficultyName, maxPlayers, _, _, instanceId = ns.call("GetInstanceInfo")
+  local inInstance, iiType = ns.call("IsInInstance")
+  local kind = ns.logic.instanceType(ns.plain(giType), inInstance, ns.plain(iiType))
+  name = ns.plain(name)
+  if type(name) ~= "string" or name == "" then name = ns.call("GetRealZoneText") or ns.call("GetZoneText") end
+  instanceId = ns.plain(instanceId)
+  return kind, ns.plain(name), ns.plain(maxPlayers), type(instanceId) == "number" and instanceId or nil,
+    ns.plain(difficultyName)
 end
 
 ns.CHECK = "|TInterface\\RaidFrame\\ReadyCheck-Ready:0|t"
@@ -224,13 +257,17 @@ function ns.newDB()
   return { version = ns.DB_VERSION }
 end
 
--- GFoAGuildSyncDB also holds the account's Discord link code (`link`) and chosen main (`main`), set by /gfoa link and
--- /gfoa main. initDB and prune leave them alone; /gfoa reset yes clears them with everything else.
+-- GFoAGuildSyncDB also holds the account's Discord link code (`link`) and chosen main (`main`), set by /gf link and
+-- /gf main. initDB and prune leave them alone; /gf reset yes clears them with everything else.
 local function initDB()
   if type(GFoAGuildSyncDB) ~= "table" or GFoAGuildSyncDB.version ~= ns.DB_VERSION then
     GFoAGuildSyncDB = ns.newDB()
   end
   local db = GFoAGuildSyncDB
+  -- WoW writes SavedVariables only at /reload or logout, and the code that was running then writes them. After an
+  -- update the first /reload loads this version but the file still holds what the old one saved, so say when the
+  -- new data will reach Discord (one /reload or logout from now). No API can save earlier.
+  if db.addonVersion and db.addonVersion ~= ns.ADDON_VERSION then ns.updatedFrom = db.addonVersion end
   db.addonVersion = ns.ADDON_VERSION
   if type(db.characters) ~= "table" then db.characters = {} end
   if type(db.raids) ~= "table" then db.raids = {} end
@@ -287,7 +324,29 @@ ns.on("PLAYER_LOGIN", function()
   db.realm = ns.call("GetRealmName") or db.realm
   db.faction = ns.call("UnitFactionGroup", "player") or db.faction
   ns.prune()
+  if ns.updatedFrom then
+    ns.print("updated " .. ns.updatedFrom .. " -> " .. ns.ADDON_VERSION
+      .. ". Your next /reload or logout saves this version's data for Discord.")
+    ns.updatedFrom = nil
+  end
+  -- /gf chatlog on: the client's chat log (Logs\WoWChatLog.txt) feeds tools/gfoa_chat_relay.py. The game turns
+  -- logging off every session, so switch it back on at each login.
+  if ns.cache and ns.cache.chatlog then ns.call("LoggingChat", true) end
 end)
+
+local function chatlogCommand(arg)
+  arg = string.lower(arg or "")
+  if arg == "on" or arg == "off" then
+    ns.cache.chatlog = (arg == "on") or nil
+    ns.call("LoggingChat", arg == "on")
+  end
+  local logging = ns.call("LoggingChat")
+  ns.print("chat log to Logs\\WoWChatLog.txt: " .. (logging and "on" or "off")
+    .. (ns.cache.chatlog and " (turned on at every login)" or "")
+    .. ". Usage: /gf chatlog on|off (feeds the guild chat relay to Discord)")
+  ns.print("Guild chat posts to Discord in a batch when you log out (not live, not on /reload). "
+    .. "Tell your guild: their guild chat ends up in Discord.")
+end
 
 ns.every(3600, "prune", function() ns.prune() end)
 
@@ -301,7 +360,7 @@ ns.LINK_HINT = "get your code from the guild Discord panel > Link game account"
 function ns.linkLine()
   local db = ns.db
   if not db then return "not loaded yet" end
-  local main = db.main and (", main " .. db.main) or ", main not set (/gfoa main)"
+  local main = db.main and (", main " .. db.main) or ", main not set (/gf main)"
   if db.link then return "Linked: " .. db.link .. main end
   return "Not linked: " .. ns.LINK_HINT .. main
 end
@@ -351,6 +410,7 @@ local function status()
     #db.raids, #db.loot, ns.lootMin(), raid and (", in raid " .. tostring(raid.zone)) or "",
     type(db.dungeons) == "table" and #db.dungeons or 0))
   if ns.xpStatusLine then ns.print(ns.xpStatusLine()) end
+  if ns.recipeStatusLine then ns.print(ns.recipeStatusLine()) end
   ns.print("Discord link: " .. ns.linkLine())
   local discord = ns.discordData()
   if discord then
@@ -364,9 +424,9 @@ local function status()
   if ns.lastError then
     ns.print(string.format("|cffff6666%d error(s), last: %s|r", ns.errorCount or 0, ns.lastError))
   end
-  ns.print("commands: /gfoa guild | cd | attune | dungeons | xp | level | finder | stats | chars | ask ITEM"
-    .. " | export | link CODE | unlink | main | options | show | minimap | roster | lootmin N | alts | sync"
-    .. " | officer | quest ID | reset")
+  ns.print("commands: /gf guild | cd | attune | dungeons | xp | level | finder | stats | chars | ask ITEM"
+    .. " | export | link CODE | unlink | main | options | show | minimap [reset] | roster | lootmin N | alts | sync"
+    .. " | officer | quest ID | questid | api | chatlog | reset")
 end
 
 ns.commands[""] = status
@@ -398,7 +458,7 @@ end
 ns.commands["main"] = function()
   local ok, err = ns.setMain()
   if ok then
-    ns.print(ns.db.main .. " is now your main" .. (ns.db.link and "" or " (also set a link code: /gfoa link CODE)"))
+    ns.print(ns.db.main .. " is now your main" .. (ns.db.link and "" or " (also set a link code: /gf link CODE)"))
   else
     ns.print(err)
   end
@@ -407,7 +467,7 @@ end
 ns.commands["lootmin"] = function(arg)
   local n = tonumber(arg)
   if not n or n < 0 or n > 5 then
-    ns.print("usage: /gfoa lootmin 0-5 (3 rare, 4 epic, 5 legendary). Now: " .. ns.lootMin())
+    ns.print("usage: /gf lootmin 0-5 (3 rare, 4 epic, 5 legendary). Now: " .. ns.lootMin())
     return
   end
   ns.settings.lootMin = math.floor(n)
@@ -416,7 +476,7 @@ end
 
 ns.commands["reset"] = function(arg)
   if arg ~= "yes" then
-    ns.print("this deletes all saved GFoA sync data on this PC. Type /gfoa reset yes to confirm.")
+    ns.print("this deletes all saved GFoA sync data on this PC. Type /gf reset yes to confirm.")
     return
   end
   GFoAGuildSyncDB = ns.newDB()
@@ -429,7 +489,7 @@ end
 
 ns.commands["quest"] = function(arg)
   local id = tonumber(arg)
-  if not id then ns.print("usage: /gfoa quest <quest id>") return end
+  if not id then ns.print("usage: /gf quest <quest id>") return end
   local done = ns.questDone and ns.questDone(id)
   if done == nil then
     ns.print("quest flag API not available in this client")
@@ -438,7 +498,10 @@ ns.commands["quest"] = function(arg)
   end
 end
 
-SLASH_GFOA1 = "/gfoa"
+ns.commands["chatlog"] = chatlogCommand
+
+SLASH_GFOA1 = "/gf"
+SLASH_GFOA2 = "/gfoa"
 SlashCmdList["GFOA"] = function(msg)
   ns.safe("slash", function()
     msg = msg or ""

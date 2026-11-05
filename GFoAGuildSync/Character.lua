@@ -126,7 +126,7 @@ local function readAttunements()
   local out = {}
   local any = false
   for _, a in ipairs(ns.config.attunements or {}) do
-    for _, q in ipairs(a.quests or {}) do
+    for _, q in ipairs(ns.logic.attunementPending(a) and {} or a.quests) do
       local done = ns.questDone(q)
       if done == nil then return nil end
       if done then
@@ -148,7 +148,12 @@ function ns.refreshCharacter(levelOverride)
   local c = me()
   if not c then return end
   c.updated = ns.now()
-  c.level = levelOverride or ns.call("UnitLevel", "player") or c.level
+  local _, surname = ns.unitName("player")
+  if surname then c.surname = surname end   -- WoW: Forever last name
+  local xp, xpMax = ns.call("UnitXP", "player"), ns.call("UnitXPMax", "player")
+  -- During logout / reload teardown the game answers level 1, XP 0 / 0 and money 0: keep the last good values.
+  local glitch = not levelOverride and ns.logic.logoutGlitch(ns.call("UnitLevel", "player"), xpMax)
+  if not glitch then c.level = levelOverride or ns.call("UnitLevel", "player") or c.level end
   local _, classFile = ns.call("UnitClass", "player")
   c.class = classFile or c.class
   c.race = ns.call("UnitRace", "player") or c.race
@@ -161,8 +166,7 @@ function ns.refreshCharacter(levelOverride)
     c.guild = nil
     c.guildRank = nil
   end
-  local xp, xpMax = ns.call("UnitXP", "player"), ns.call("UnitXPMax", "player")
-  if type(xp) == "number" and type(xpMax) == "number" then
+  if not glitch and type(xp) == "number" and type(xpMax) == "number" then
     c.xp = xp
     c.xpMax = xpMax
   end
@@ -182,7 +186,7 @@ function ns.refreshCharacter(levelOverride)
   c.gear = readGear() or c.gear
   c.attunements = readAttunements() or c.attunements
   local money = ns.call("GetMoney")
-  if type(money) == "number" then c.money = money end
+  if not glitch and type(money) == "number" then c.money = money end
   -- Drop cooldowns that are already ready.
   if type(c.cooldowns) == "table" then
     local t = ns.now()
@@ -220,9 +224,11 @@ end)
 -- ---------------------------------------------------------------------------
 
 -- Adds names to c.recipes[prof] without removing ones not shown (headers may be collapsed or filtered).
-local function mergeRecipes(prof, names, cooldowns)
+local function mergeRecipes(prof, names, cooldowns, via)
   local c = me()
-  if not c or not prof or prof == "" or prof == "UNKNOWN" then return end
+  if not c or type(prof) ~= "string" or prof == "" or prof == "UNKNOWN" then return end
+  -- For /gf: which API the last profession window scan used (WoW: Forever's professions window is unconfirmed).
+  ns.lastRecipeScan = { prof = prof, count = #names, via = via, t = ns.now() }
   c.recipes = c.recipes or {}
   local list = c.recipes[prof] or {}
   local seen = {}
@@ -255,6 +261,13 @@ local function addReagent(reagent, crafted)
   ns.logic.addReagent(cache.reagents, reagent, crafted)
 end
 
+-- Someone else's recipes in the window (linked / guild profession, NPC order): never save them as ours.
+local function foreignTradeSkill()
+  return ns.logic.foreignTradeSkill(ns.call("C_TradeSkillUI.IsTradeSkillLinked") or ns.call("IsTradeSkillLinked"),
+    ns.call("C_TradeSkillUI.IsTradeSkillGuild") or ns.call("IsTradeSkillGuild"),
+    ns.call("C_TradeSkillUI.IsNPCCrafting"))
+end
+
 local function readModernTradeSkill()
   local prof
   local info = ns.call("C_TradeSkillUI.GetBaseProfessionInfo")
@@ -279,7 +292,7 @@ local function readModernTradeSkill()
       if type(cd) == "number" and cd > 0 then cds[r.name] = t + math.floor(cd) end
     end
   end
-  mergeRecipes(prof, names, cds)
+  mergeRecipes(prof, names, cds, "C_TradeSkillUI")
   return true
 end
 
@@ -301,15 +314,18 @@ local function readClassicTradeSkill()
       end
     end
   end
-  mergeRecipes(prof, names, cds)
+  mergeRecipes(prof, names, cds, "GetTradeSkillInfo")
   return true
 end
 
 local function readCraft()
   local n = ns.call("GetNumCrafts")
   if not n or n == 0 then return end
-  local prof = ns.call("GetCraftDisplaySkillLine") or ns.call("GetCraftSkillLine", 1) or ns.call("GetCraftName")
-  if type(prof) ~= "string" then return end
+  if foreignTradeSkill() then return end
+  local c = me()
+  local prof = ns.logic.craftProfession(ns.call("GetCraftDisplaySkillLine") or ns.call("GetCraftSkillLine", 1),
+    ns.call("GetCraftName"), c and c.professions)
+  if not prof then return end   -- e.g. hunters' Beast Training, which uses the same window
   local names = {}
   for i = 1, n do
     local name, _, kind = ns.call("GetCraftInfo", i)
@@ -321,10 +337,11 @@ local function readCraft()
       end
     end
   end
-  mergeRecipes(prof, names, {})
+  mergeRecipes(prof, names, {}, "GetCraftInfo")
 end
 
 local function readTradeSkill()
+  if foreignTradeSkill() then return end
   if ns.api("C_TradeSkillUI.GetAllRecipeIDs") and readModernTradeSkill() then return end
   readClassicTradeSkill()
 end
@@ -338,3 +355,66 @@ ns.on("TRADE_SKILL_LIST_UPDATE", tradeSoon)
 ns.on("TRADE_SKILL_DATA_SOURCE_CHANGED", tradeSoon)
 ns.on("CRAFT_SHOW", craftSoon)
 ns.on("CRAFT_UPDATE", craftSoon)
+
+-- ---------------------------------------------------------------------------
+-- /gf questid: quest ids in your quest log (to fill in Config.lua attunements on WoW: Forever)
+-- ---------------------------------------------------------------------------
+
+local function questLogRows()
+  if ns.api("C_QuestLog.GetInfo") and ns.api("C_QuestLog.GetNumQuestLogEntries") then
+    return ns.logic.questLogRows(ns.call("C_QuestLog.GetNumQuestLogEntries"), function(i)
+      local q = ns.call("C_QuestLog.GetInfo", i)
+      if type(q) ~= "table" then return nil, true end
+      return q.title, q.isHeader, q.questID
+    end)
+  end
+  return ns.logic.questLogRows(ns.call("GetNumQuestLogEntries"), function(i)
+    local title, _, _, isHeader, _, _, _, id = ns.call("GetQuestLogTitle", i)
+    return title, isHeader, id
+  end)
+end
+
+ns.commands["questid"] = function()
+  local rows = questLogRows()
+  if #rows == 0 then
+    ns.print("no quest ids found (empty quest log, collapsed headers, or this client doesn't give ids)")
+    return
+  end
+  for _, r in ipairs(rows) do ns.print(r.id .. "  " .. r.title) end
+  ns.print("attunement ids go in Config.lua (attunements); /gf quest <id> checks one after you finish it")
+end
+ns.commands["questids"] = ns.commands["questid"]
+
+-- /gf api: which game APIs and events this client has (for checking WoW: Forever; report the output if data is missing).
+ns.commands["api"] = function()
+  local function yes(b) return b and "yes" or "no" end
+  local apis = {
+    "C_TradeSkillUI.GetAllRecipeIDs", "GetNumTradeSkills", "GetTradeSkillInfo", "GetNumCrafts", "GetCraftInfo",
+    "GetInstanceInfo", "IsInInstance", "GetRaidRosterInfo", "C_QuestLog.IsQuestFlaggedCompleted",
+    "IsQuestFlaggedCompleted", "GetQuestLogTitle", "C_QuestLog.GetInfo",
+  }
+  local parts = {}
+  for _, a in ipairs(apis) do table.insert(parts, a .. " " .. yes(ns.api(a))) end
+  ns.print("APIs: " .. table.concat(parts, ", "))
+  local events = { "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE", "TRADE_SKILL_DATA_SOURCE_CHANGED", "CRAFT_SHOW",
+    "ENCOUNTER_START", "ENCOUNTER_END", "BOSS_KILL", "CHAT_MSG_LOOT", "GROUP_ROSTER_UPDATE", "RAID_ROSTER_UPDATE" }
+  parts = {}
+  for _, e in ipairs(events) do table.insert(parts, e .. " " .. yes(ns.hasEvent(e))) end
+  ns.print("events: " .. table.concat(parts, ", "))
+  local kind, zone, maxPlayers, _, difficultyName = ns.instanceInfo()
+  local size = ns.logic.raidSize(maxPlayers, difficultyName)
+  ns.print(string.format("secret values: %s, combat log: %s, instance: %s %s %s",
+    yes(type(issecretvalue) == "function"), ns.combatLogOff and "off (deaths not recorded)" or "on",
+    tostring(kind or "none"), tostring(zone or ""), tostring(size or "")))
+end
+
+-- One /gf status line: this character's saved recipes and the last profession window scan.
+function ns.recipeStatusLine()
+  local c = me()
+  local s = "recipes: " .. (ns.logic.recipeSummary(c and c.recipes) or "none yet (open each profession window once)")
+  local scan = ns.lastRecipeScan
+  if scan then
+    s = s .. string.format("; last scan %s, %d via %s, %s", scan.prof, scan.count, tostring(scan.via), ns.ago(scan.t))
+  end
+  return s
+end
