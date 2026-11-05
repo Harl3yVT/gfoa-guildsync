@@ -15,6 +15,8 @@ jobs:
           if [ -z "$CF_API_KEY" ]; then echo "CF_API_KEY is not set"; exit 1; fi
           code=$(curl -s -o versions.json -w '%{http_code}' -H "X-Api-Token: $CF_API_KEY" https://wow.curseforge.com/api/game/versions)
           echo "HTTP $code"
+          echo "Key length: ${#CF_API_KEY}, looks like a UUID: $([[ "$CF_API_KEY" =~ ^[0-9a-f-]{36}$ ]] && echo yes || echo no)"
+          if [ "$code" != "200" ]; then head -c 300 versions.json; echo; fi
           if [ "$code" != "200" ]; then echo "CurseForge did not accept the key"; exit 1; fi
           echo "Key accepted. Forever versions it knows:"
           grep -o '"name":"1\.60[^"]*"' versions.json | sort -u || true
