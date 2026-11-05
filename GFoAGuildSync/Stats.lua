@@ -289,12 +289,7 @@ function ns.statsLines()
   tick()
   local lines = {}
   local function add(text) table.insert(lines, text) end
-  if ns.statsSharing() then
-    add(muted("Totals shared with the guild Discord (no gold" .. (ns.opt("statsShareGold", false) and ", gold on" or "")
-      .. "). /gf stats share off"))
-  else
-    add(muted("Only on this PC. Share totals for guild leaderboards: /gf stats share on"))
-  end
+  add(muted(L.shareStatusText(ns.statsSharing(), ns.opt("statsShareGold", false))))
   add(string.format("Since %s   Sessions: %d   Longest: %s",
     date and date("%Y-%m-%d", s.since or 0) or tostring(s.since), n(s.sessions),
     L.formatDuration(n(s.longestSession))))

@@ -423,6 +423,13 @@ function L.sharedStats(stats, now, withGold)
   return out
 end
 
+-- First line of the My stats window: what (if anything) is shared with the guild Discord.
+function L.shareStatusText(sharing, withGold)
+  if not sharing then return "Only on this PC. Share totals for guild leaderboards: /gf stats share on" end
+  return "Totals shared with the guild Discord (" .. (withGold and "gold included" or "no gold")
+    .. "). /gf stats share off"
+end
+
 -- What the sheet carries when sharing is off: tells the bot to drop this character's shared stats.
 function L.sharedStatsOff(now)
   return { v = L.SHARED_STATS_VERSION, t = now, off = true }

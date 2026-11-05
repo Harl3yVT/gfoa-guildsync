@@ -128,8 +128,8 @@ character already registered to someone else is never moved.
 - `GFoAGuildSyncSettings` (per character, never uploaded): options, window positions and **My stats**. Only when
   you turn on `/gf stats share` does a totals block (`sharedStats`, no gold by default) go into your character in
   `GFoAGuildSyncDB` and your guild sync payload.
-- Hidden guild addon messages, at most one per second: your logged-in character, link code and main for officers'
-  addons (guild sync),
+- Hidden guild addon messages, at most one per second: your logged-in character (with its attunement names, 1.5.3+),
+  link code and main for officers' addons (guild sync),
   craft requests you click, and that character's profession cooldowns (only cooldown recipe names and time left,
   plus your addon version).
   Each can be turned off in the options.

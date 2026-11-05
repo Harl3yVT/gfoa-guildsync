@@ -216,6 +216,14 @@ local function exportChar(name, c, withRecipes)
     end
     e.prof = prof
   end
+  if type(c.attunements) == "table" then   -- 1.5.3: names of the attunements this character has (bot /raid ready)
+    local att = L.jsonArray()
+    for name, done in pairs(c.attunements) do
+      if type(name) == "string" and done == true then att[#att + 1] = name end
+    end
+    table.sort(att)
+    e.att = att
+  end
   if withRecipes and type(c.recipes) == "table" then
     local rec = {}
     for prof, list in pairs(c.recipes) do

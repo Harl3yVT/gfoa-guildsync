@@ -2,5 +2,5 @@
 ## Title: GFoA Guild Sync (Discord data)
 ## Notes: Holds the guild Discord data that the uploader writes, for GFoA Guild Sync. No code. Only needed with the uploader.
 ## Author: Gay Furries of Azeroth
-## Version: 1.5.2
+## Version: 1.5.3
 ## SavedVariables: GFoAGuildSyncBotData
