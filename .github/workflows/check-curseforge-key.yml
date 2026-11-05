@@ -1,0 +1,20 @@
+name: Check CurseForge key
+
+# Manual check that the CF_API_KEY secret is accepted by CurseForge. Uploads nothing.
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask CurseForge for the game version list with the key
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+        run: |
+          if [ -z "$CF_API_KEY" ]; then echo "CF_API_KEY is not set"; exit 1; fi
+          code=$(curl -s -o versions.json -w '%{http_code}' -H "X-Api-Token: $CF_API_KEY" https://wow.curseforge.com/api/game/versions)
+          echo "HTTP $code"
+          if [ "$code" != "200" ]; then echo "CurseForge did not accept the key"; exit 1; fi
+          echo "Key accepted. Forever versions it knows:"
+          grep -o '"name":"1\.60[^"]*"' versions.json | sort -u || true
