@@ -350,6 +350,31 @@ function L.parseGameMessage(msg)
   return "M", game, cleanScore(best), cleanScore(wk), tonumber(week), extras
 end
 
+-- Leaderboards view rows (GuildWindow.lua, combined "This week | Best ever" like PvP): { name, week, total, value,
+-- rank, mine }, value = the column ranked by ("week" or "total"), ties by the other column then name. Equal
+-- results share a rank. keep(name) -> false leaves a name out (former members).
+function L.gameLeaderboardRows(peers, mine, myName, by, now, keep)
+  local rows = {}
+  for _, r in ipairs(L.gameBoard(peers, mine, myName, "best", now)) do
+    if not keep or keep(r.name) then
+      local row = { name = r.name, week = r.week, total = r.best, mine = r.mine }
+      row.value = by == "total" and row.total or row.week
+      table.insert(rows, row)
+    end
+  end
+  local function tie(r) return by == "total" and r.week or r.total end
+  table.sort(rows, function(a, b)
+    if a.value ~= b.value then return a.value > b.value end
+    if tie(a) ~= tie(b) then return tie(a) > tie(b) end
+    return string.lower(a.name) < string.lower(b.name)
+  end)
+  for i, r in ipairs(rows) do
+    local p = rows[i - 1]
+    r.rank = (p and p.value == r.value and tie(p) == tie(r)) and p.rank or i
+  end
+  return rows
+end
+
 -- Rows { name, best, week, mine } for one game, sorted by the chosen column (ties by name); scores from earlier
 -- weeks count as 0 for "week". peers = { [name] = { best, weekBest, week, t } }.
 function L.gameBoard(peers, mine, myName, by, now)

@@ -141,7 +141,9 @@ local function refreshLeaderboards()
   local keep = not ns.opt("lbShowFormer", false) and L.lbRosterFilter(ns.db and ns.db.guild and ns.db.guild.members)
   local roster = ns.db and ns.db.guild and ns.db.guild.members
   local all
-  if L.LB_BOARD[lbBoard].shame then
+  if L.LB_BOARD[lbBoard].game then
+    all = ns.gameLeaderboardRows and ns.gameLeaderboardRows(lbBy, keep or nil) or {}
+  elseif L.LB_BOARD[lbBoard].shame then
     all = L.shameRows(db, roster, 30)   -- current guildmates only, so "Former members" doesn't apply
   else
     all = L.leaderboardRows(db, lbBoard, now, lbBy, keep or nil)
@@ -152,12 +154,18 @@ local function refreshLeaderboards()
   local board = L.LB_BOARD[lbBoard]
   boardButton:SetText("Board: " .. board.text)
   countText:SetText(string.format("%d on %s, from Sephya's Leaderboard", #lbShown, board.text))
+  if board.game then
+    countText:SetText(string.format("%d on %s, from guildmates' addons (/pawdrop to play)", #lbShown, board.text))
+  end
   if board.shame then
     countText:SetText(string.format("%d on the Wall of Shame (gold hidden, or no addon and online in 30 days)",
       #lbShown))
   end
   if #lbShown == 0 then
-    if board.shame then
+    if board.game then
+      frame.emptyState = { "No " .. board.text .. " scores yet",
+        "Play with /pawdrop. Guildmates show up once they've played and are online." }
+    elseif board.shame then
       frame.emptyState = { "Nobody to shame", "Everyone shares their gold and has the addon. Suspicious." }
     elseif lbBoard == "duels" or lbBoard == "rolls" then
       frame.emptyState = { "No guild " .. string.lower(board.text) .. " yet",
@@ -178,7 +186,7 @@ local function refreshLeaderboards()
       title, key = (h.key == "value" and "Crime" or "Verdict"), "value"
     elseif combined and (h.key == "value" or h.key == "net") then
       local by = h.key == "value" and "week" or "total"
-      title, key = (by == "week" and "This week" or "Total"), "by:" .. by
+      title, key = (by == "week" and "This week" or (board.game and "Best ever" or "Total")), "by:" .. by
     end
     h.sortKey = key
     h:SetShown(h.key ~= "net" or lbBoard == "rolls" or combined or board.shame)
@@ -385,6 +393,7 @@ local function create()
     for _, b in ipairs(L.LB_BOARDS) do
       table.insert(items, { text = b.text, func = function()
         lbBoard, lbSortKey, lbReverse, lbBy, offset = b.key, "rank", false, "week", 0
+        if b.game and ns.queryGameScores then ns.queryGameScores() end
         refresh()
       end })
     end
