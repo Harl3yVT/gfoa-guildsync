@@ -70,6 +70,10 @@ only reads game state and writes SavedVariables; it never acts for you, never ty
   Dismiss. Optional (off by default): one chat line at login when there are some.
 - **Toasts** (`/gf toasts on`, **off by default**): a small note that fades by itself when one of your characters
   moves up a guild leaderboard or a guildie reaches 60.
+- **Paw Drop** (`/gf pegs`, minimap menu): a little peg-and-ball game for flights and AFK. Aim with the mouse,
+  click to shoot, clear the 15 pink pegs; the moving basket gives the ball back, gold pegs give one more. Your best
+  is shared with guildmates' addons ("Guild scores": all time and this week; Options can turn sharing off).
+  Options can also open it by itself on flight paths and when you go AFK (**off by default**, never in combat).
 - Dungeon runs, raid attendance and loot history, and the export string for the Discord "Import from addon" button.
 
 ![Item tooltip with Guild can craft](docs/screenshot-tooltip.png)
@@ -103,6 +107,7 @@ The old `/gfoa` still works and does the same thing as `/gf`.
 |---|---|
 | `/gf` | Status: roster scan, counts, XP/hour, Discord data, errors, "new version is out" |
 | `/gf guild` | Guild window (also: right-click the minimap button) |
+| `/gf pegs` | Paw Drop minigame and guild scores (also `/gf games`, `/pawdrop`, `/peggle`) |
 | `/gf lb` | Guild window on its Leaderboards view (Sephya's boards: PvP, deaths, gold, duels, deathrolls) |
 | `/gf cd` | Profession cooldowns: yours and guildmates' |
 | `/gf level` | Levelling buddy and guild race to 60 |

@@ -53,6 +53,11 @@ local function registerPrefix()
 end
 ns.registerCommPrefix = registerPrefix   -- BotRelay.lua
 
+-- Short hidden messages from other files (Games.lua scores) share the one-per-second queue.
+function ns.queueComm(msg)
+  table.insert(queue, msg)
+end
+
 local function rawSend(msg)
   if not ns.call("IsInGuild") then return end
   if ns.api("C_ChatInfo.SendAddonMessage") then
