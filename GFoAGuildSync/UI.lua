@@ -30,6 +30,9 @@ local function statusLines()
     table.insert(lines, string.format("Officer mode: %d members synced, %d craft requests", ns.count(db.guildSync),
       type(db.craftRequests) == "table" and #db.craftRequests or 0))
   end
+  for _, l in ipairs(ns.eventTooltipLines and ns.eventTooltipLines() or {}) do table.insert(lines, l) end
+  local crafts = ns.craftNoteLine and ns.craftNoteLine()
+  if crafts then table.insert(lines, crafts) end
   if ns.lastError then table.insert(lines, "|cffff8a8aErrors: " .. (ns.errorCount or 0) .. "|r") end
   table.insert(lines, ns.ui.MUTED .. "Saved on logout or /reload|r")
   return table.concat(lines, "\n")
@@ -150,6 +153,11 @@ local function createMinimapButton()
   glow:SetAllPoints()
   glow:SetBlendMode("ADD")
   glow:SetAlpha(0.35)
+  -- Next guild event countdown ("2h", "45m") under the icon, from the Discord data (Events.lua).
+  local countdown = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  countdown:SetPoint("TOP", b, "BOTTOM", 0, 4)
+  countdown:SetTextColor(ns.ui.C.pink[1], ns.ui.C.pink[2], ns.ui.C.pink[3])
+  b.countdown = countdown
   b:SetScript("OnMouseDown", function() icon:SetSize(29, 29); icon:ClearAllPoints(); icon:SetPoint("CENTER") end)
   b:SetScript("OnMouseUp", function() icon:ClearAllPoints(); icon:SetAllPoints() end)
 
@@ -185,6 +193,13 @@ local function createMinimapButton()
   b:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
   minimapButton = b
   placeMinimapButton()
+  ns.updateMinimapCountdown()
+end
+
+function ns.updateMinimapCountdown()
+  if not minimapButton or not minimapButton.countdown then return end
+  local text = ns.eventCountdownText and ns.eventCountdownText()
+  minimapButton.countdown:SetText(text or "")
 end
 
 function ns.menuItems()
@@ -196,6 +211,8 @@ function ns.menuItems()
     { text = "Dungeon runs", func = function() ns.toggleDungeons() end },
     { text = "Levelling and race to 60", func = function() ns.toggleLevelling() end },
     { text = "Guildie finder", func = function() ns.toggleFinder() end },
+    { text = "Raid night: who's ready", func = function() ns.toggleReady() end },
+    { text = "Craft requests for you", func = function() ns.toggleCrafts() end },
     { text = "My stats (private)", func = function() ns.toggleStats() end },
     { text = "My characters (Discord link)", func = function() ns.toggleCharacters() end },
     { text = "Export for Discord", func = function() ns.showExport() end },
@@ -203,6 +220,7 @@ function ns.menuItems()
   }
   -- Sephya's GayFurriesLeaderboard ships in the same download; only listed when it's loaded.
   if _G.GayFurriesLeaderboardFrame then
+    table.insert(items, 3, { text = "Guild leaderboards", func = function() ns.openLeaderboards() end })
     table.insert(items, #items, { text = "Leaderboard (Sephya's)", func = function()
       local lb = _G.GayFurriesLeaderboardFrame
       if lb then lb:SetShown(not lb:IsShown()) end

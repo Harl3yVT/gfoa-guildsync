@@ -3,8 +3,9 @@
 Guild tools for Gay Furries of Azeroth. Works for every guild member with no setup and no officer rights.
 
 **Nothing intrusive.** No pop-ups, no chat posts, no sounds, no tours, nothing that opens by itself. Everything is a
-passive tooltip line, a window you open yourself, or the minimap button. The addon only reads game state and writes
-SavedVariables; it never acts for you, never types in chat and never edits guild notes.
+passive tooltip line, a window you open yourself, or the minimap button. Nothing prints to chat or pops up unless you
+turn it on: event reminders, the craft-request line and toasts are all off by default (Options or `/gf`). The addon
+only reads game state and writes SavedVariables; it never acts for you, never types in chat and never edits guild notes.
 
 ![Guild window with alts grouped under their main](docs/screenshot-guild-window.png)
 <!-- screenshot placeholder: guild window, "Group alts under their main" ticked -->
@@ -24,8 +25,10 @@ SavedVariables; it never acts for you, never types in chat and never edits guild
   minimap button, settings and `/gpvp` command: PvP kills, deaths, gold, duels and deathrolls. The guild window's
   "Sephya's window" button opens it. It skips its own roster requests while Guild Sync is running.
   The guild window's **Roster | Leaderboards** switch shows its boards (PvP, deaths, gold, duels, deathrolls) in our
-  window too, your row in pink; read only, it never changes Sephya's data.
-  Our minimap menu lists "Leaderboard (Sephya's)" when it's loaded. Options can hide its minimap button ("Hide the
+  window too, your row in pink. PvP and deaths show this week and the total side by side (click either header to
+  rank by it). People who left the guild are hidden (tick **Former members** to show them); read only, it never
+  changes Sephya's data.
+  Our minimap menu lists "Guild leaderboards" (that view, also `/gf lb`) and "Leaderboard (Sephya's)" (its own window) when it's loaded. Options can hide its minimap button ("Hide the
   Leaderboard minimap button", off by default). Player tooltips show your record against that player from its
   data, e.g. "You vs them: duels 3-1 · deathrolls 2-0" (your wins-losses; no line when you have none).
 - **Alts everywhere**: "Altname is Thrall's alt" and "Alts: ..." on player tooltips and guild window rows;
@@ -49,6 +52,23 @@ SavedVariables; it never acts for you, never types in chat and never edits guild
   only checked while the window is open.
 - **My characters** (`/gf chars`): Discord link status per character, with **Show import code**, Options and
   minimap buttons.
+- **Discord info without the uploader**: members whose PC doesn't get `GFoAGuildSyncBotData.lua` receive the same
+  Discord data (check marks, alts, roles, crafters, surnames, link status) from an officer's addon, in the background.
+  `/gf` says where yours came from; Options can turn it off.
+- **Raid night** (`/gf ready`): for your raid group or the guild online, who's ready, who isn't 60, who isn't attuned
+  and who has no addon data, plus tanks / healers / DPS against the raid size (Barrow Deeps 10, Hyjal Summit 20,
+  Onyxia's Lair 40). The in-game twin of the Discord's `/raid ready`.
+- **Guild event reminders**: the next event from the Discord schedule counts down under the minimap button ("2h")
+  and in its tooltip. Off by default: `/gf reminders on` adds a chat line only you see 30 and 5 minutes before.
+  `/gf events` lists them. Only as fresh as the
+  Discord data file (the uploader's last run, then a `/reload`).
+- **Who can craft this?** Hold Shift while you hover an item, or click an item link in chat: every guild crafter,
+  online first.
+  `/gf who <shift-click item>` does it in chat.
+- **Craft requests for you** (`/gf crafts`): "Ask guild crafters" requests one of your characters can make, with
+  Dismiss. Optional (off by default): one chat line at login when there are some.
+- **Toasts** (`/gf toasts on`, **off by default**): a small note that fades by itself when one of your characters
+  moves up a guild leaderboard or a guildie reaches 60.
 - Dungeon runs, raid attendance and loot history, and the export string for the Discord "Import from addon" button.
 
 ![Item tooltip with Guild can craft](docs/screenshot-tooltip.png)
@@ -82,6 +102,7 @@ The old `/gfoa` still works and does the same thing as `/gf`.
 |---|---|
 | `/gf` | Status: roster scan, counts, XP/hour, Discord data, errors, "new version is out" |
 | `/gf guild` | Guild window (also: right-click the minimap button) |
+| `/gf lb` | Guild window on its Leaderboards view (Sephya's boards: PvP, deaths, gold, duels, deathrolls) |
 | `/gf cd` | Profession cooldowns: yours and guildmates' |
 | `/gf level` | Levelling buddy and guild race to 60 |
 | `/gf finder` | Guildie finder (online, +-3 levels) |
@@ -91,6 +112,12 @@ The old `/gfoa` still works and does the same thing as `/gf`.
 | `/gf attune` | Attunements and pre-raid checklist |
 | `/gf dungeons` | Your dungeon runs (21 days) |
 | `/gf ask ITEM` | Ask guild crafters for a shift-clicked item |
+| `/gf ready` | Raid night: who in your group (or the guild online) is ready for the raid |
+| `/gf events` | Upcoming guild events from the Discord schedule |
+| `/gf reminders on\|off` | Chat reminders 30 and 5 minutes before guild events (off by default) |
+| `/gf who ITEM` | Every guild crafter for a shift-clicked item, online first |
+| `/gf crafts` | Craft requests your characters can make, with Dismiss |
+| `/gf toasts on\|off` | Toasts for leaderboard moves and guildies reaching 60 (off by default) |
 | `/gf xp` | XP/hour, next level and time to 60 |
 | `/gf export` | Export your characters for the Discord ("Import from addon") |
 | `/gf link CODE` | Link this WoW account to your Discord (code from the guild Discord panel > Link game account); `/gf link` shows the status |
@@ -114,7 +141,7 @@ Minimap button: left-click opens a menu of every window, right-click opens the g
 
 ## Options
 
-Esc > Options > AddOns > GFoA Guild Sync (per character): every tooltip line, the chat alt suffix, check marks,
+Esc > Options > AddOns > GFoA Guild Sync (per character; the page scrolls on small screens): every tooltip line, the chat alt suffix, check marks,
 guild sync, Alt+right-click "Ask guild crafters", cooldown sharing, minimap button, status window, loot quality,
 officer mode, and this character's Discord link status with **Show import code**. The **Link code** box, **Save**
 and **This is my main** set the account-wide link code and main (same as `/gf link CODE` and `/gf main`).
@@ -134,19 +161,22 @@ character already registered to someone else is never moved.
   guildmates (`newestSeen`, version string only). Your Discord link code and chosen main (`link`, `main`), which
   also go out with guild sync and the export.
 - `GFoAGuildSyncCache` (account, never uploaded): reagents from your profession windows, guildmates' shared
-  cooldowns, daily roster levels for the race to 60.
+  cooldowns, daily roster levels for the race to 60, and Discord data relayed by an officer's addon (`botData`).
 - `GFoAGuildSyncSettings` (per character, never uploaded): options, window positions and **My stats**. Only when
   you turn on `/gf stats share` does a totals block (`sharedStats`, no gold by default) go into your character in
   `GFoAGuildSyncDB` and your guild sync payload.
 - Hidden guild addon messages, at most one per second: your logged-in character (with its attunement names, 1.5.3+),
   link code and main for officers' addons (guild sync),
   craft requests you click, and that character's profession cooldowns (only cooldown recipe names and time left,
-  plus your addon version).
+  plus your addon version), and a tiny "my Discord data is from <time>" request when yours is missing or over 12 hours
+  old (at most every 30 minutes). Officers' addons with the uploader file answer it with a whispered copy, sharing the
+  same one-message-per-second limit.
   Each can be turned off in the options.
 
 The Discord parts need the optional `GFoAGuildSyncBotData.lua` file in your account's SavedVariables folder plus the
 small `GFoAGuildSyncBotData` companion addon (no code; it only tells WoW to load that file). Without them the addon
-shows nothing extra. The addon never changes that file.
+asks officers' addons for a copy (see above; only accepted from guild ranks 0-2 in your roster), and otherwise shows
+nothing extra. The addon never changes that file.
 
 ## Export for Discord
 
@@ -186,3 +216,13 @@ bot repo.
 
 12. `/gf link abc-234` says saved (`ABC234`); `/gf link` and `/gf` show it; `/gf link 0OO` says it isn't a
     code; Options > Link code + Save does the same; This is my main sets `main`; `/gf unlink` clears it.
+13. Bot data relay (two players): an officer (guild rank 0-2) with the uploader file online; a guildmate on a PC
+    without the file logs in. About 25-60 s later the guildmate's `/gf` says "Discord data: ... via <officer>'s
+    addon" and the guild window shows check marks and alts; the officer's `/gf` says "shares it (1 sent)". Nothing
+    shows in either chat. Untick "Get Discord info from guild officers' addons": the copy is no longer used.
+14. `/gf ready` in a raid group: everyone listed once under Ready / Not 60 / Not attuned / No addon data, role
+    counts and "N/size ready"; Raid: picks Barrow Deeps / Hyjal Summit / Onyxia's Lair; Guild online lists the
+    online roster instead. With Discord data that has `events`: the minimap button shows "2h" etc., its tooltip
+    names the event, `/gf events` lists them; no chat line until `/gf reminders on`, then one 30 and 5 minutes
+    before (once, also after `/reload`). Hold Shift, then hover a crafted item: "Guild crafters (online first)". `/gf crafts` lists requests your
+    characters can make; Dismiss hides one for good. `/gf toasts on` shows a test toast that fades or closes on click.
