@@ -108,6 +108,8 @@ local function createPanel()
     function(v) ns.toggleMinimap(v) end))
   place(W.check(content, "Show status window", function() return ns.settings.frameShown end,
     function(v) ns.toggleFrame(v) end))
+  check("Share my minigame best scores with guildmates' addons", "shareGameScores", true)
+  check("Open Paw Drop by itself on flight paths and when AFK (never in combat)", "gamesAutoOpen", false)
   check("Hide the Leaderboard minimap button (open it from this menu instead)", "leaderboardMinimapHidden", false,
     function() ns.applyLeaderboardMinimap() end)
 

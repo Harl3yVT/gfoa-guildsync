@@ -215,6 +215,7 @@ function ns.menuItems()
     { text = "Craft requests for you", func = function() ns.toggleCrafts() end },
     { text = "My stats (private)", func = function() ns.toggleStats() end },
     { text = "My characters (Discord link)", func = function() ns.toggleCharacters() end },
+    { text = "Paw Drop (minigame)", func = function() ns.toggleGames() end },
     { text = "Export for Discord", func = function() ns.showExport() end },
     { text = "Options", func = function() ns.openOptions() end },
   }

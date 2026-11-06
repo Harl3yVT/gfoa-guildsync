@@ -6,7 +6,7 @@ local addonName, ns = ...
 
 ns.name = addonName or "GFoAGuildSync"
 ns.DB_VERSION = 1
-ns.ADDON_VERSION = "1.7.1"
+ns.ADDON_VERSION = "1.8.0"
 
 local frame = CreateFrame("Frame")
 ns.frame = frame
@@ -429,7 +429,7 @@ local function status()
   ns.print("commands: /gf guild | lb | cd | attune | dungeons | xp | level | finder | stats | chars | ask ITEM"
     .. " | ready | events | reminders | who ITEM | crafts | toasts on|off"
     .. " | export | link CODE | unlink | main | options | show | minimap [reset] | roster | lootmin N | alts | sync"
-    .. " | officer | quest ID | questid | api | chatlog | reset")
+    .. " | officer | quest ID | questid | api | chatlog | reset | pegs")
 end
 
 ns.commands[""] = status
