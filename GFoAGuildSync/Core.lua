@@ -6,7 +6,7 @@ local addonName, ns = ...
 
 ns.name = addonName or "GFoAGuildSync"
 ns.DB_VERSION = 1
-ns.ADDON_VERSION = "1.5.2"
+ns.ADDON_VERSION = "1.7.0"
 
 local frame = CreateFrame("Frame")
 ns.frame = frame
@@ -112,11 +112,11 @@ end
 
 -- Data from the guild Discord (GFoAGuildSyncBotData, an optional file next to the saved data). Read only: never write to it, WoW saves
 -- it back unchanged on logout. Returns nil when the file is missing or a version we don't know.
+-- A copy relayed by an officer's addon (BotRelay.lua, GFoAGuildSyncCache.botData) is used when it is newer; the same
+-- table comes back on every call (the display-name cache in Roster.lua keys on it). Second value: "file" / "relay".
 function ns.discordData()
-  local d = GFoAGuildSyncBotData
-  if type(d) ~= "table" then return nil end
-  if d.version ~= nil and d.version ~= 1 then return nil end
-  return d
+  local relay = ns.cache and ns.opt("botDataRelay", true) and ns.cache.botData or nil
+  return ns.logic.newerBotData(GFoAGuildSyncBotData, relay)
 end
 
 -- true when v is a Midnight-style "secret" value that addons may not inspect (guarded: the API may not exist).
@@ -412,19 +412,22 @@ local function status()
   if ns.xpStatusLine then ns.print(ns.xpStatusLine()) end
   if ns.recipeStatusLine then ns.print(ns.recipeStatusLine()) end
   ns.print("Discord link: " .. ns.linkLine())
-  local discord = ns.discordData()
+  local discord, source = ns.discordData()
   if discord then
-    ns.print(string.format("Discord data: %d characters, %d crafted items (from %s)",
-      ns.count(discord.characters), ns.count(discord.crafters), ns.ago(discord.generated)))
+    ns.print(string.format("Discord data: %d characters, %d crafted items (from %s%s)",
+      ns.count(discord.characters), ns.count(discord.crafters), ns.ago(discord.generated),
+      source == "relay" and (", via " .. tostring(ns.cache.botDataFrom) .. "'s addon") or ""))
   else
-    ns.print("Discord data: none yet (optional; it arrives after you log out if the guild sync tool is set up)")
+    ns.print("Discord data: none yet (optional; officers' addons send it, or the guild sync tool after you log out)")
   end
+  if ns.botDataRelayLine then ns.print(ns.botDataRelayLine()) end
   local notice = ns.updateNotice and ns.updateNotice()
   if notice then ns.print("|cffffd100" .. notice .. "|r") end
   if ns.lastError then
     ns.print(string.format("|cffff6666%d error(s), last: %s|r", ns.errorCount or 0, ns.lastError))
   end
-  ns.print("commands: /gf guild | cd | attune | dungeons | xp | level | finder | stats | chars | ask ITEM"
+  ns.print("commands: /gf guild | lb | cd | attune | dungeons | xp | level | finder | stats | chars | ask ITEM"
+    .. " | ready | events | reminders | who ITEM | crafts | toasts on|off"
     .. " | export | link CODE | unlink | main | options | show | minimap [reset] | roster | lootmin N | alts | sync"
     .. " | officer | quest ID | questid | api | chatlog | reset")
 end

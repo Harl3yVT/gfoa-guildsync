@@ -105,7 +105,9 @@ local function scan()
     if m.name then kept[#kept + 1] = m end
   end
   members = kept
+  local oldLevels = type(ns.db.guild) == "table" and ns.logic.levelMap(ns.db.guild.members) or nil
   ns.db.guild = { name = guildName, updated = ns.now(), members = members }
+  if ns.onRosterScan then ns.safe("rosterScan", ns.onRosterScan, oldLevels, members) end
   if ns.cache then
     ns.cache.levelHistory = type(ns.cache.levelHistory) == "table" and ns.cache.levelHistory or {}
     ns.logic.recordLevels(ns.cache.levelHistory, members, math.floor(ns.now() / 86400))

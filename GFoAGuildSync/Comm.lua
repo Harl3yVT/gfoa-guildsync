@@ -51,6 +51,7 @@ local function registerPrefix()
   end
   return registered
 end
+ns.registerCommPrefix = registerPrefix   -- BotRelay.lua
 
 local function rawSend(msg)
   if not ns.call("IsInGuild") then return end
@@ -61,9 +62,14 @@ local function rawSend(msg)
   end
 end
 
+-- One message per second in all: guild sync first, the bot data relay (BotRelay.lua) only when this queue is empty.
 local function pump()
   local msg = table.remove(queue, 1)
-  if msg then rawSend(msg) end
+  if msg then
+    rawSend(msg)
+  elseif ns.relayPump then
+    ns.relayPump()
+  end
   L.expirePending(pending, ns.now(), 60)
 end
 

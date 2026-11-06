@@ -61,6 +61,7 @@ local function makeListWindow(name, title, width, rows, posKey, build, tick, set
   end
   return win
 end
+ns.makeListWindow = makeListWindow   -- also used by RaidNight.lua
 
 local function cdText(readyAt, t)
   local left = (type(readyAt) == "number") and (readyAt - t) or 0
@@ -304,7 +305,7 @@ local chars = makeListWindow("GFoAGuildSyncCharsFrame", "My characters", 420, 14
   local lines = {}
   for _, name in ipairs(sortedCharacters()) do
     local c = ns.db.characters[name]
-    local status, main = L.linkStatus(discord, name)
+    local status, main = L.linkStatus(discord, L.fullName(name, type(c) == "table" and c.surname or nil) or name)
     local text
     if status == "main" then
       text = ns.CHECK .. " linked on Discord (main)"

@@ -251,29 +251,40 @@ end
 
 local lowerIndex = setmetatable({}, { __mode = "k" })
 
--- The discord entry for a character name ("Name" or "Name-Realm"), or nil.
+-- discord.characters key for one candidate name (exact, then case-insensitive), or nil.
+local function characterKey(chars, n)
+  if type(chars[n]) == "table" then return n end
+  local idx = lowerIndex[chars]
+  if not idx then
+    idx = {}
+    for k, v in pairs(chars) do
+      if type(k) == "string" and type(v) == "table" then idx[string.lower(k)] = k end
+    end
+    lowerIndex[chars] = idx
+  end
+  return idx[string.lower(n)]
+end
+
+-- The discord entry for a character name and its key there, or nil. name: "Name", "Name-Realm" or Forever's
+-- "First Surname"; like the bot's roster_names, the joined form ("Minusculedog" for "Minuscule Dog") is tried
+-- before the first word.
 function L.memberEntry(discord, name)
   if type(discord) ~= "table" or type(discord.characters) ~= "table" then return nil end
   local short = L.stripRealm(name)
   if not short then return nil end
-  local e = discord.characters[short]
-  if type(e) == "table" then return e end
-  local idx = lowerIndex[discord.characters]
-  if not idx then
-    idx = {}
-    for k, v in pairs(discord.characters) do
-      if type(k) == "string" and type(v) == "table" then idx[string.lower(k)] = v end
-    end
-    lowerIndex[discord.characters] = idx
-  end
-  return idx[string.lower(short)]
+  local base = string.match(string.match(name, "^([^%-]*)") or "", "^%s*(.-)%s*$") or ""
+  local joined = string.gsub(base, "%s+", "")
+  local key = (joined ~= short and joined ~= "" and characterKey(discord.characters, joined))
+    or characterKey(discord.characters, short)
+  if not key then return nil end
+  return discord.characters[key], key
 end
 
 -- The main's name when name is an alt, else nil.
 function L.altOf(discord, name)
-  local e = L.memberEntry(discord, name)
+  local e, key = L.memberEntry(discord, name)
   if not e or type(e.main) ~= "string" or e.main == "" then return nil end
-  if string.lower(e.main) == string.lower(L.stripRealm(name) or "") then return nil end
+  if string.lower(e.main) == string.lower(key) then return nil end
   return e.main
 end
 
@@ -371,7 +382,8 @@ end
 function L.altsOf(discord, name)
   local out = {}
   if type(discord) ~= "table" or type(discord.characters) ~= "table" then return out end
-  local short = string.lower(L.stripRealm(name) or "")
+  local _, key = L.memberEntry(discord, name)
+  local short = string.lower(key or L.stripRealm(name) or "")
   if short == "" then return out end
   for k, e in pairs(discord.characters) do
     if type(k) == "string" and type(e) == "table" and type(e.main) == "string"
@@ -1000,25 +1012,31 @@ function L.lbWeekId(now)
   return math.floor(((now or 0) - L.LB_RESET_OFFSET) / 604800)
 end
 
--- Board picker order. field: member field; weekly: only counts in the current week; log: built from that list.
+-- Board picker order. field: member field; weekly: only counts in the current week; total: the all-time field shown
+-- next to the week on the same board (rank by either one); log: built from that list.
 L.LB_BOARDS = {
-  { key = "pvpWeek", text = "PvP week", field = "weekly", weekly = true },
-  { key = "pvpTotal", text = "PvP total", field = "total" },
-  { key = "deathsWeek", text = "Deaths week", field = "dWeekly", weekly = true },
-  { key = "deathsTotal", text = "Deaths total", field = "dTotal" },
+  { key = "pvp", text = "PvP kills", field = "weekly", total = "total", weekly = true },
+  { key = "deaths", text = "Deaths", field = "dWeekly", total = "dTotal", weekly = true },
   { key = "gold", text = "Gold", field = "gold" },
   { key = "duels", text = "Duels", log = "duels" },
   { key = "rolls", text = "Deathrolls", log = "rolls" },
 }
 L.LB_BOARD = {}
 for _, b in ipairs(L.LB_BOARDS) do L.LB_BOARD[b.key] = b end
+-- The 1.6.0 single-number boards, still accepted (not in the picker).
+L.LB_BOARD.pvpWeek = { key = "pvpWeek", text = "PvP week", field = "weekly", weekly = true }
+L.LB_BOARD.pvpTotal = { key = "pvpTotal", text = "PvP total", field = "total" }
+L.LB_BOARD.deathsWeek = { key = "deathsWeek", text = "Deaths week", field = "dWeekly", weekly = true }
+L.LB_BOARD.deathsTotal = { key = "deathsTotal", text = "Deaths total", field = "dTotal" }
 
 local function lbNum(v) return type(v) == "number" and v or 0 end
 
--- Rows for one board: { rank, name, class, value, wins?, losses?, net? }, best first. value is the number the
--- board ranks by: kills / deaths / copper; duels: wins (ties: fewer losses); deathrolls: net copper (ties: wins).
--- Hidden gold (-1) and bad entries are left out. Equal results share a rank ("1, 2, 2, 4").
-function L.leaderboardRows(db, board, now)
+-- Rows for one board: { rank, name, class, value, week?, total?, wins?, losses?, net? }, best first. value is the
+-- number the board ranks by: kills / deaths / copper; duels: wins (ties: fewer losses); deathrolls: net copper (ties:
+-- wins). PvP and deaths rows carry both week and total; by = "total" ranks by the total (ties: week), else by the
+-- week (ties: total). Hidden gold (-1) and bad entries are left out. Equal results share a rank ("1, 2, 2, 4").
+-- keep (optional): keep(name) -> false leaves a name out before ranking (L.lbRosterFilter: former members).
+function L.leaderboardRows(db, board, now, by, keep)
   local rows = {}
   local cfg = L.LB_BOARD[board]
   if type(db) ~= "table" or not cfg then return rows end
@@ -1058,12 +1076,27 @@ function L.leaderboardRows(db, board, now)
         local v = lbNum(m[cfg.field])
         if cfg.weekly and m.week ~= week then v = 0 end   -- a stale week counts as 0
         if not (board == "gold" and (type(m.gold) ~= "number" or m.gold < 0)) then   -- hidden gold: left out
-          table.insert(rows, { name = name, class = memberClass(name) or "", value = v })
+          local r = { name = name, class = memberClass(name) or "", value = v }
+          if cfg.total then
+            r.week, r.total = v, lbNum(m[cfg.total])
+            if by == "total" then r.value = r.total end
+          end
+          table.insert(rows, r)
         end
       end
     end
   end
-  local function tie(a) return board == "duels" and -a.losses or (board == "rolls" and a.wins or 0) end
+  if keep then
+    local kept = {}
+    for _, r in ipairs(rows) do
+      if keep(r.name) then kept[#kept + 1] = r end
+    end
+    rows = kept
+  end
+  local function tie(a)
+    if cfg.total then return by == "total" and a.week or a.total end
+    return board == "duels" and -a.losses or (board == "rolls" and a.wins or 0)
+  end
   table.sort(rows, function(a, b)
     if a.value ~= b.value then return a.value > b.value end
     if tie(a) ~= tie(b) then return tie(a) > tie(b) end
@@ -1074,6 +1107,31 @@ function L.leaderboardRows(db, board, now)
     r.rank = (p and p.value == r.value and tie(p) == tie(r)) and p.rank or i
   end
   return rows
+end
+
+-- keep(name) for L.leaderboardRows: true for names in the roster scan (members = ns.db.guild.members), matching
+-- "First Surname" against a member's fullName and an old first-name-only key against its first word / name, all
+-- case-insensitive. nil when there is no roster scan yet (then nobody is hidden).
+function L.lbRosterFilter(members)
+  if type(members) ~= "table" or #members == 0 then return nil end
+  local full, first = {}, {}
+  for _, m in ipairs(members) do
+    if type(m) == "table" then
+      if type(m.fullName) == "string" and m.fullName ~= "" then
+        full[string.lower(m.fullName)] = true
+        local w = string.match(m.fullName, "^%s*(%S+)")
+        if w then first[string.lower(w)] = true end
+      end
+      if type(m.name) == "string" and m.name ~= "" then first[string.lower(m.name)] = true end
+    end
+  end
+  return function(name)
+    if type(name) ~= "string" then return false end
+    local base = string.lower(string.match(name, "^([^%-]*)") or name)
+    base = string.match(base, "^%s*(.-)%s*$")
+    if full[base] then return true end
+    return not string.find(base, " ", 1, true) and first[base] == true
+  end
 end
 
 -- A sorted copy of board rows by "rank" (1 first), "name" (A-Z), "value" or "record" (wins, then fewer losses;
@@ -1105,6 +1163,500 @@ function L.formatNetMoney(c)
   if c > 0 then return "+" .. L.formatMoney(c) end
   if c < 0 then return "-" .. L.formatMoney(-c) end
   return "0c"
+end
+
+-- ---------------------------------------------------------------------------
+-- Bot data relay (docs "Bot data relay"): members without the uploader get GFoAGuildSyncBotData from an officer's
+-- addon. G:<generated> asks on GUILD; a holder (data from the uploader file) answers by WHISPER with
+-- B:<msgId>:<i>/<n>:<chunk>, the chunks joined being a GFOA1 string of the compact JSON below. Pure parts only.
+-- ---------------------------------------------------------------------------
+
+L.RELAY_STALE = 12 * 3600        -- ask when the newest copy is older than this
+L.RELAY_ASK_GAP = 1800           -- at most one request per 30 minutes
+L.RELAY_MAX_RANK = 2             -- trust replies only from guild ranks 0..2 (rankIndex: 0 = guild master)
+L.RELAY_MAX_MSGS = 120           -- largest reply in addon messages (about 28 KB, two minutes at 1/s)
+L.RELAY_MAX_CHARS = 1000         -- bounds for a received table
+L.RELAY_MAX_CRAFTS = 3000
+L.RELAY_MAX_CRAFTERS = 5
+L.RELAY_NAME_MAX = 48            -- character names, mains, surnames, roles, specs
+L.RELAY_KEY_MAX = 100            -- crafter keys (lowercase item / recipe names)
+
+-- G:<generated> (0 = none) and B chunks; returns kind and fields or nil. Kept apart from L.parseMessage (Codec.lua)
+-- so older addons and the guild sync parser never see these kinds.
+function L.parseRelayMessage(msg)
+  if type(msg) ~= "string" then return nil end
+  local have = string.match(msg, "^G:(%d+)$")
+  if have then return "G", tonumber(have) end
+  local id, i, n, chunk = string.match(msg, "^B:(%w+):(%d+)/(%d+):(.*)$")
+  if id then
+    i, n = tonumber(i), tonumber(n)
+    if i and n and i >= 1 and i <= n and n <= L.RELAY_MAX_MSGS then return "B", id, i, n, chunk end
+  end
+  return nil
+end
+
+function L.relayRequestMessage(have)
+  return "G:" .. tostring(math.max(0, math.floor(tonumber(have) or 0)))
+end
+
+-- The `generated` time of a bot data table, 0 when missing / not version 1.
+function L.botDataGenerated(d)
+  if type(d) ~= "table" or (d.version ~= nil and d.version ~= 1) then return 0 end
+  return type(d.generated) == "number" and d.generated or 0
+end
+
+-- The newer of the uploader file's table and the relayed copy (the file on a tie). Returns the table itself (never a
+-- copy: Roster.lua's display-name cache keys on its identity) and "file" / "relay", or nil.
+function L.newerBotData(file, relay)
+  local fg, rg = L.botDataGenerated(file), L.botDataGenerated(relay)
+  local fileOk = type(file) == "table" and (file.version == nil or file.version == 1)
+  local relayOk = type(relay) == "table" and relay.version == 1 and rg > 0
+  if relayOk and (not fileOk or rg > fg) then return relay, "relay" end
+  if fileOk then return file, "file" end
+  return nil
+end
+
+-- Should this addon ask now? have = newest generated time we hold (0 = none). Returns want, have.
+function L.relayShouldAsk(have, now, lastAsk, stale, gap)
+  have = tonumber(have) or 0
+  if now - (tonumber(lastAsk) or 0) < (gap or L.RELAY_ASK_GAP) then return false, have end
+  if have <= 0 or now - have > (stale or L.RELAY_STALE) then return true, have end
+  return false, have
+end
+
+-- Should a holder answer a G:<have>? Only with a newer copy from the uploader file.
+function L.relayShouldAnswer(fileGenerated, have)
+  fileGenerated, have = tonumber(fileGenerated) or 0, tonumber(have) or 0
+  return fileGenerated > 0 and fileGenerated > have
+end
+
+-- The roster member for an addon message sender ("Name", "Name-Realm" or "Name Surname"), matching the roster's
+-- name or the first word of its fullName, case-insensitively. nil when not in the last roster scan.
+function L.rosterMember(members, who)
+  local short = L.stripRealm(who)
+  if not short or type(members) ~= "table" then return nil end
+  short = string.lower(short)
+  for _, m in ipairs(members) do
+    if type(m) == "table" then
+      local first = type(m.fullName) == "string" and string.match(m.fullName, "^%s*(%S+)") or nil
+      if (type(m.name) == "string" and string.lower(m.name) == short) or (first and string.lower(first) == short) then
+        return m
+      end
+    end
+  end
+  return nil
+end
+
+-- Trust rule for relayed bot data: the sender is in our last roster scan with rankIndex 0..maxRank.
+function L.relayTrusted(members, who, maxRank)
+  local m = L.rosterMember(members, who)
+  if not m or type(m.rankIndex) ~= "number" then return false end
+  return m.rankIndex >= 0 and m.rankIndex <= (maxRank or L.RELAY_MAX_RANK)
+end
+
+local function relayStr(v, max)
+  if type(v) ~= "string" or v == "" or #v > max or string.find(v, "[%c|]") then return nil end
+  return v
+end
+
+-- Compact JSON payload of a bot data table (known fields only):
+--   { v = 1, g = generated, c = { Name = { main or "" (= itself) or false, 1|0 registered, role, spec, surname } },
+--     f = { ["runecloth bag"] = { "Testy" } } }
+-- Missing strings are "", trailing "" dropped. withCrafters = false leaves f out (a reply that would be too long).
+function L.relayPayload(d, withCrafters)
+  local c = {}
+  for name, e in pairs(type(d) == "table" and type(d.characters) == "table" and d.characters or {}) do
+    if relayStr(name, L.RELAY_NAME_MAX) and type(e) == "table" then
+      local main = relayStr(e.main, L.RELAY_NAME_MAX)
+      local row = { main == name and "" or main or false, e.registered == true and 1 or 0,
+        relayStr(e.role, L.RELAY_NAME_MAX) or "", relayStr(e.spec, L.RELAY_NAME_MAX) or "",
+        relayStr(e.surname, L.RELAY_NAME_MAX) or "" }
+      while #row > 2 and row[#row] == "" do row[#row] = nil end
+      c[name] = row
+    end
+  end
+  local payload = { v = 1, g = L.botDataGenerated(d), c = c }
+  if withCrafters ~= false then
+    local f = {}
+    for key, list in pairs(type(d) == "table" and type(d.crafters) == "table" and d.crafters or {}) do
+      if relayStr(key, L.RELAY_KEY_MAX) and type(list) == "table" then
+        local names = {}
+        for i = 1, math.min(#list, L.RELAY_MAX_CRAFTERS) do
+          if relayStr(list[i], L.RELAY_NAME_MAX) then names[#names + 1] = list[i] end
+        end
+        if #names > 0 then f[key] = names end
+      end
+    end
+    payload.f = f
+  end
+  return payload
+end
+
+-- Validates a decoded relay payload into a GFoAGuildSyncBotData-shaped table (version 1, bounded sizes, only the
+-- known fields). Returns the table, or nil + reason. now: receiver time (a `g` over a day ahead is rejected).
+function L.botDataFromRelay(p, now)
+  if type(p) ~= "table" or p.v ~= 1 then return nil, "not version 1" end
+  local g = p.g
+  if type(g) ~= "number" or g <= 0 or g ~= math.floor(g) then return nil, "no generated time" end
+  if now and g > now + 86400 then return nil, "generated in the future" end
+  if type(p.c) ~= "table" then return nil, "no characters" end
+  local chars, n = {}, 0
+  for name, row in pairs(p.c) do
+    n = n + 1
+    if n > L.RELAY_MAX_CHARS then return nil, "too many characters" end
+    if relayStr(name, L.RELAY_NAME_MAX) and type(row) == "table" then
+      local e = { registered = row[2] == 1 }
+      if row[1] == "" then e.main = name else e.main = relayStr(row[1], L.RELAY_NAME_MAX) end
+      e.role = relayStr(row[3], L.RELAY_NAME_MAX)
+      e.spec = relayStr(row[4], L.RELAY_NAME_MAX)
+      e.surname = relayStr(row[5], L.RELAY_NAME_MAX)
+      chars[name] = e
+    end
+  end
+  local crafters, k = {}, 0
+  if p.f ~= nil and type(p.f) ~= "table" then return nil, "bad crafters" end
+  for key, list in pairs(p.f or {}) do
+    k = k + 1
+    if k > L.RELAY_MAX_CRAFTS then return nil, "too many crafted items" end
+    if relayStr(key, L.RELAY_KEY_MAX) and type(list) == "table" then
+      local names = {}
+      for i = 1, math.min(#list, L.RELAY_MAX_CRAFTERS) do
+        if relayStr(list[i], L.RELAY_NAME_MAX) then names[#names + 1] = list[i] end
+      end
+      if #names > 0 then crafters[string.lower(key)] = names end
+    end
+  end
+  return { version = 1, generated = g, characters = chars, crafters = crafters }
+end
+
+-- The reply messages for a bot data table: B:<msgId>:<i>/<n>:<chunk> of the GFOA1 string, crafters dropped when the
+-- full reply would be over RELAY_MAX_MSGS. Returns the list and whether crafters were dropped, or nil. Needs Codec.lua.
+function L.relayReplyMessages(d, msgId, maxMsgs)
+  maxMsgs = maxMsgs or L.RELAY_MAX_MSGS
+  for _, withCrafters in ipairs({ true, false }) do
+    local msgs = L.chunkMessages(L.encodeExport(L.relayPayload(d, withCrafters)), msgId)
+    if #msgs <= maxMsgs then
+      for i, m in ipairs(msgs) do msgs[i] = "B" .. string.sub(m, 2) end   -- same framing as D, own kind letter
+      return msgs, not withCrafters
+    end
+  end
+  return nil
+end
+
+
+-- ---------------------------------------------------------------------------
+-- 1.7.0: raid-night panel, guild event reminders, crafter lookup, craft-request notes, leaderboard toasts
+-- ---------------------------------------------------------------------------
+
+-- Same raids, sizes and attunement names as the bot (guildbot/store.py RAID_SIZES / RAID_ATTUNEMENT).
+L.RAIDS = { "Barrow Deeps", "Hyjal Summit", "Onyxia's Lair" }
+L.RAID_SIZES = { ["Barrow Deeps"] = 10, ["Hyjal Summit"] = 20, ["Onyxia's Lair"] = 40 }
+L.RAID_ATTUNEMENT = { ["Onyxia's Lair"] = "Onyxia" }
+L.ROLES = { "Tank", "Healer", "DPS" }
+
+-- A group / roster name ("Asha Brightvale", "Asha-Realm", "Asha") -> "Asha", the key everything else uses.
+function L.firstName(name)
+  return (L.splitName(name))
+end
+
+-- Attunements in any shape we get them: a list of names (bot export `att`, payload `att`) or a { name = true }
+-- table (own sheets). Returns a set, or nil when unknown (nil / not a table). An empty table means "checked, none".
+function L.attSet(att)
+  if type(att) ~= "table" then return nil end
+  local set = {}
+  for k, v in pairs(att) do
+    if type(k) == "number" and type(v) == "string" then set[v] = true
+    elseif type(k) == "string" and v == true then set[k] = true end
+  end
+  return set
+end
+
+-- "Tank" / "Healer" / "DPS" or nil, case-insensitive.
+function L.normalRole(role)
+  if type(role) ~= "string" then return nil end
+  local low = string.lower(role)
+  for _, r in ipairs(L.ROLES) do
+    if string.lower(r) == low then return r end
+  end
+  return nil
+end
+
+-- One person for the readiness check from what the addon knows. Sources (all optional):
+--   discord = GFoAGuildSyncBotData (role, `att` per registered character)
+--   own     = GFoAGuildSyncDB.characters (this PC's characters: level, class, attunements)
+--   synced  = { [name] = payload char } from decoded guild sync payloads (officer addons: lvl, cls, att)
+-- base = { name, level, class, online } from the group or guild roster. Own sheets win, then sync, then the bot.
+function L.readinessPerson(base, discord, own, synced)
+  local name = L.firstName(base and base.name)
+  if not name then return nil end
+  local p = { name = name, level = base.level, class = base.class, online = base.online }
+  local mine = type(own) == "table" and own[name]
+  local sync = type(synced) == "table" and synced[name]
+  local entry = L.memberEntry(discord, name)
+  if type(mine) == "table" then
+    p.att = L.attSet(mine.attunements)
+    if type(p.level) ~= "number" or p.level == 0 then p.level = mine.level end
+    p.class = p.class or mine.class
+  end
+  if p.att == nil and type(sync) == "table" then
+    p.att = L.attSet(sync.att)
+    if type(p.level) ~= "number" or p.level == 0 then p.level = sync.lvl end
+    p.class = p.class or sync.cls
+  end
+  if p.att == nil and type(entry) == "table" then p.att = L.attSet(entry.att) end
+  p.role = L.normalRole(type(entry) == "table" and entry.role or nil)
+  p.spec = type(entry) == "table" and type(entry.spec) == "string" and entry.spec or nil
+  return p
+end
+
+-- The bot's /raid ready split for people (from readinessPerson): ready, lowLevel (below max level), notAttuned,
+-- unknown (attunement tracked but no addon data), plus the role count over everyone. Lists sorted by name.
+function L.raidReadiness(people, raid, maxLevel)
+  maxLevel = maxLevel or L.MAX_LEVEL
+  local attune = L.RAID_ATTUNEMENT[raid]
+  local r = { raid = raid, size = L.RAID_SIZES[raid], attunement = attune,
+    ready = {}, lowLevel = {}, notAttuned = {}, unknown = {}, roles = { Tank = 0, Healer = 0, DPS = 0, none = 0 } }
+  local seen = {}
+  for _, p in ipairs(people or {}) do
+    if type(p) == "table" and type(p.name) == "string" and not seen[string.lower(p.name)] then
+      seen[string.lower(p.name)] = true
+      local role = L.normalRole(p.role) or "none"
+      r.roles[role] = r.roles[role] + 1
+      if (tonumber(p.level) or 0) < maxLevel then
+        table.insert(r.lowLevel, p)
+      elseif attune and p.att == nil then
+        table.insert(r.unknown, p)
+      elseif attune and not p.att[attune] then
+        table.insert(r.notAttuned, p)
+      else
+        table.insert(r.ready, p)
+      end
+    end
+  end
+  local function byName(a, b) return string.lower(a.name) < string.lower(b.name) end
+  for _, k in ipairs({ "ready", "lowLevel", "notAttuned", "unknown" }) do table.sort(r[k], byName) end
+  r.people = #r.ready + #r.lowLevel + #r.notAttuned + #r.unknown
+  return r
+end
+
+-- Which raid the panel starts on: the raid you're standing in, else the one you picked last, else by group size.
+function L.defaultRaid(zone, groupSize, saved)
+  if type(zone) == "string" and L.RAID_SIZES[zone] then return zone end
+  if type(saved) == "string" and L.RAID_SIZES[saved] then return saved end
+  local n = tonumber(groupSize) or 0
+  if n > 20 then return "Onyxia's Lair" end
+  if n > 10 then return "Hyjal Summit" end
+  return "Barrow Deeps"
+end
+
+-- "Tanks 2  Healers 3  DPS 5  (no role 1)  -  8/10 ready"
+function L.roleLine(r)
+  local text = string.format("Tanks %d  Healers %d  DPS %d", r.roles.Tank, r.roles.Healer, r.roles.DPS)
+  if r.roles.none > 0 then text = text .. "  (no role " .. r.roles.none .. ")" end
+  if r.size then text = text .. string.format("  -  %d/%d ready", #r.ready, r.size) end
+  return text
+end
+
+-- Guild events from the bot export (`events`): only well-formed future ones, soonest first, at most max.
+function L.upcomingEvents(list, now, max)
+  local out = {}
+  for _, e in ipairs(type(list) == "table" and list or {}) do
+    if type(e) == "table" and type(e.name) == "string" and e.name ~= "" and type(e.start) == "number"
+        and e.start > now then
+      table.insert(out, e)
+    end
+  end
+  table.sort(out, function(a, b)
+    if a.start ~= b.start then return a.start < b.start end
+    return a.name < b.name
+  end)
+  while max and #out > max do table.remove(out) end
+  return out
+end
+
+-- "Onyxia (Onyxia's Lair, Team A)"; the raid is left out when it's the same as the name.
+function L.eventLabel(e)
+  local extra = {}
+  if type(e.raid) == "string" and e.raid ~= "" and e.raid ~= e.name then table.insert(extra, e.raid) end
+  if type(e.team) == "string" and e.team ~= "" then table.insert(extra, "Team " .. e.team) end
+  if #extra == 0 then return e.name end
+  return e.name .. " (" .. table.concat(extra, ", ") .. ")"
+end
+
+-- Short minimap text: "45m", "2h", "3d"; nil from 7 days on.
+function L.shortCountdown(secs)
+  if type(secs) ~= "number" or secs < 0 then return nil end
+  if secs < 3600 then return math.max(1, math.ceil(secs / 60)) .. "m" end
+  if secs < 86400 then return math.floor(secs / 3600) .. "h" end
+  if secs < 7 * 86400 then return math.floor(secs / 86400) .. "d" end
+  return nil
+end
+
+L.REMINDER_MARKS = { 30, 5 }
+
+-- Reminders due now: per event, the smallest mark (minutes) we're inside of, once. sent[key] = start remembers
+-- what was said (a /reload doesn't repeat it; logging in 3 minutes before gives only the 5-minute one). Larger
+-- marks are marked as said too. Returns { { event = e, mins = m } }.
+function L.dueReminders(events, now, sent, marks)
+  marks = marks or L.REMINDER_MARKS
+  local out = {}
+  for _, e in ipairs(events or {}) do
+    local left = e.start - now
+    if left > 0 then
+      local pick
+      for _, m in ipairs(marks) do
+        if left <= m * 60 and (not pick or m < pick) then pick = m end
+      end
+      if pick then
+        local base = e.name .. ":" .. e.start .. ":"
+        if not sent[base .. pick] then
+          for _, m in ipairs(marks) do
+            if m >= pick then sent[base .. m] = e.start end
+          end
+          table.insert(out, { event = e, mins = pick })
+        end
+      end
+    end
+  end
+  return out
+end
+
+-- Drops reminder marks of events that started over an hour ago.
+function L.pruneSent(sent, now)
+  if type(sent) ~= "table" then return {} end
+  for k, start in pairs(sent) do
+    if type(start) ~= "number" or start < now - 3600 then sent[k] = nil end
+  end
+  return sent
+end
+
+-- "Discord data is 7h 00m old ..." or nil when fresh (under 6 hours) or unknown.
+function L.staleHint(generated, now)
+  if type(generated) ~= "number" or generated <= 0 then return nil end
+  local age = now - generated
+  if age < 6 * 3600 then return nil end
+  return "Discord data is " .. L.formatDuration(age) .. " old (it updates when the uploader runs)"
+end
+
+-- Crafter lookup: everyone who can craft it, online first, then by skill, then by name. online = set of lower
+-- first names. Each entry gets .online.
+function L.crafterLookup(list, online)
+  local out = {}
+  for _, e in ipairs(list or {}) do
+    table.insert(out, { name = e.name, prof = e.prof, skill = e.skill,
+      online = type(online) == "table" and online[string.lower(e.name or "")] == true or false })
+  end
+  table.sort(out, function(a, b)
+    if a.online ~= b.online then return a.online end
+    if (a.skill or 0) ~= (b.skill or 0) then return (a.skill or 0) > (b.skill or 0) end
+    return string.lower(a.name or "") < string.lower(b.name or "")
+  end)
+  return out
+end
+
+-- Dedupe key of one craft request: sender + item (id when known) + day, like the bot's craft_requests key.
+function L.craftRequestKey(r)
+  return string.lower(r.sender or "?") .. ":" .. tostring(r.itemId or string.lower(r.item or "?")) .. ":"
+    .. math.floor((r.t or 0) / 86400)
+end
+
+-- Open craft requests one of `mine` (set of lower first names: this account's characters) could make.
+-- craftersOf(item) -> list of { name }. Your own requests and dismissed ones (dismissed[key]) are left out.
+-- Returns { { req = r, key = k, who = { your names } } }, newest first.
+function L.craftRequestsFor(requests, mine, craftersOf, dismissed, now, maxAge)
+  local out = {}
+  maxAge = maxAge or 7 * 86400
+  for _, r in ipairs(type(requests) == "table" and requests or {}) do
+    if type(r) == "table" and type(r.item) == "string" and type(r.sender) == "string" and type(r.t) == "number"
+        and r.t >= now - maxAge and not mine[string.lower(r.sender)] then
+      local key = L.craftRequestKey(r)
+      if not (type(dismissed) == "table" and dismissed[key]) then
+        local who = {}
+        for _, c in ipairs(craftersOf(r.item) or {}) do
+          if type(c.name) == "string" and mine[string.lower(c.name)] then table.insert(who, c.name) end
+        end
+        if #who > 0 then table.insert(out, { req = r, key = key, who = who }) end
+      end
+    end
+  end
+  table.sort(out, function(a, b) return a.req.t > b.req.t end)
+  return out
+end
+
+-- Drops dismissed craft requests older than maxAge (default 8 days).
+function L.pruneDismissed(dismissed, now, maxAge)
+  if type(dismissed) ~= "table" then return {} end
+  for k, t in pairs(dismissed) do
+    if type(t) ~= "number" or t < now - (maxAge or 8 * 86400) then dismissed[k] = nil end
+  end
+  return dismissed
+end
+
+-- Leaderboard titles, same keys as the bot's boards (guildbot/stats_store.py BOARDS).
+L.BOARD_TITLES = {
+  deaths = "Most deaths", quests = "Most quests turned in", dungeons = "Most dungeon runs",
+  bosses = "Most dungeon bosses killed", kills = "Most mobs slain", flights = "Most flight paths taken",
+  hearths = "Most hearthstones", fish = "Most fish caught", skillups = "Most profession skill-ups",
+  epics = "Most epics looted", explore = "Most exploration XP", xph = "Fastest levelling session",
+  session = "Longest play session", first_epic = "First epic", gold = "Most gold earned",
+}
+
+-- { [board] = rank } for name on the bot export's `boards` (first names in rank order).
+function L.boardRanks(boards, name)
+  local out = {}
+  if type(boards) ~= "table" or type(name) ~= "string" then return out end
+  local low = string.lower(name)
+  for key, list in pairs(boards) do
+    if type(key) == "string" and type(list) == "table" then
+      for i, n in ipairs(list) do
+        if type(n) == "string" and string.lower(n) == low then out[key] = i; break end
+      end
+    end
+  end
+  return out
+end
+
+-- Boards where you moved up since `old` (nil old = first look: nothing to report). Entering a board counts.
+-- Returns { { board, from (nil = new), to } } sorted by board key.
+function L.boardMoves(old, new)
+  local out = {}
+  if type(old) ~= "table" then return out end
+  for key, rank in pairs(new or {}) do
+    local was = old[key]
+    if type(was) ~= "number" or rank < was then table.insert(out, { board = key, from = was, to = rank }) end
+  end
+  table.sort(out, function(a, b) return a.board < b.board end)
+  return out
+end
+
+function L.boardMoveText(m)
+  local title = L.BOARD_TITLES[m.board] or m.board
+  if m.from then return string.format("Up to #%d on %s (was #%d)", m.to, title, m.from) end
+  return string.format("You're #%d on %s", m.to, title)
+end
+
+-- Guildies who reached maxLevel between two roster scans. old = { [name] = level } (nil = no earlier scan).
+function L.dings(old, members, maxLevel)
+  maxLevel = maxLevel or L.MAX_LEVEL
+  local out = {}
+  if type(old) ~= "table" then return out end
+  for _, m in ipairs(members or {}) do
+    if type(m) == "table" and type(m.name) == "string" and type(m.level) == "number" and m.level >= maxLevel then
+      local was = old[m.name]
+      if type(was) == "number" and was > 0 and was < maxLevel then table.insert(out, m.name) end
+    end
+  end
+  table.sort(out)
+  return out
+end
+
+-- { [name] = level } from a roster member list.
+function L.levelMap(members)
+  local out = {}
+  for _, m in ipairs(members or {}) do
+    if type(m) == "table" and type(m.name) == "string" and type(m.level) == "number" then out[m.name] = m.level end
+  end
+  return out
 end
 
 return L

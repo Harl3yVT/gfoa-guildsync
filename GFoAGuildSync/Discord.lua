@@ -92,9 +92,17 @@ local function itemTooltip(tt)
   local name, link = tt:GetItem()
   if type(name) ~= "string" or name == "" or ns.isSecret(name) then return end
   local lines = {}
-  if ns.opt("tooltipCrafters", true) then
+  -- 1.7.0 crafter lookup: holding Shift, or a clicked chat link (ItemRefTooltip), lists every crafter, online first.
+  local lookup = ns.opt("crafterLookup", true) and ns.crafterLookupLines
+    and (ns.call("IsShiftKeyDown") or tt == _G.ItemRefTooltip)
+  if ns.opt("tooltipCrafters", true) or lookup then
     local list = ns.guildCrafters(name)
-    if #list > 0 then table.insert(lines, { "Guild can craft: " .. L.formatCrafters(list, 5, ns.displayName), 0.83, 0.55, 1 }) end
+    if lookup and #list > 0 then
+      for _, l in ipairs(ns.crafterLookupLines(name, 8)) do table.insert(lines, l) end
+    elseif #list > 0 then
+      table.insert(lines, { "Guild can craft: " .. L.formatCrafters(list, 5, ns.displayName)
+        .. (ns.opt("crafterLookup", true) and "  |cffa79db3(Shift: all, online first)|r" or ""), 0.83, 0.55, 1 })
+    end
     local target = L.recipeTarget(name)
     if target then
       local known = ns.guildCrafters(target)
@@ -119,7 +127,7 @@ local function itemTooltip(tt)
       .. (ask.acked and " (an officer's addon got it)" or " (waiting for an officer to come online)"), 0.6, 0.8, 0.6 })
   end
   if #lines == 0 then return end
-  addOnce(tt, "item:" .. name, function()
+  addOnce(tt, "item:" .. name .. (lookup and ":all" or ""), function()
     for _, l in ipairs(lines) do tt:AddLine(l[1], l[2], l[3], l[4], true) end
   end)
 end
@@ -146,7 +154,8 @@ local function unitTooltip(tt)
   if type(realm) == "string" and realm ~= "" and realm ~= ns.realmKey() then return end   -- discord names have no realm
   local h2h = headToHeadLine(name, surname)
   local discord = ns.discordData()
-  local e = discord and L.memberEntry(discord, name)
+  local full = L.fullName(name, surname)   -- "First Surname": also finds a registered "Firstsurname"
+  local e = discord and L.memberEntry(discord, full)
   local parts, altLine, alts = {}, nil, {}
   if e then
     if e.registered then table.insert(parts, ns.CHECK .. " Discord") end
@@ -158,8 +167,8 @@ local function unitTooltip(tt)
       if n == name then return L.fullName(name, surname) or n end
       return ns.displayName(n)
     end
-    altLine = L.altLine(discord, name, disp)
-    alts = L.altsOf(discord, name)
+    altLine = L.altLine(discord, full, disp)
+    alts = L.altsOf(discord, full)
     for i, a in ipairs(alts) do alts[i] = ns.displayName(a) end
   end
   if #parts == 0 and not altLine and #alts == 0 and not h2h then return end

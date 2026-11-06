@@ -25,14 +25,12 @@ local LB_COLUMNS = {
   { key = "value", title = "", width = 160 },
   { key = "net", title = "Net gold", width = 160 },
 }
-local LB_VALUE_TITLE = {
-  pvpWeek = "Kills this week", pvpTotal = "Kills", deathsWeek = "Deaths this week", deathsTotal = "Deaths",
-  gold = "Gold", duels = "Duels won-lost", rolls = "Deathrolls won-lost",
-}
+local LB_VALUE_TITLE = { gold = "Gold", duels = "Duels won-lost", rolls = "Deathrolls won-lost" }
 
-local frame, rows, slider, countText, classButton, roleButton, boardButton
+local frame, rows, slider, countText, classButton, roleButton, boardButton, formerCheck
 local view = "roster"   -- or "leaderboards"
-local lbBoard, lbSortKey, lbReverse = "pvpWeek", "rank", false
+-- lbBy: PvP and deaths boards rank by "week" or "total" (both columns are shown; click a header to switch).
+local lbBoard, lbSortKey, lbReverse, lbBy = "pvp", "rank", false, "week"
 local lbShown, lbMe = {}, nil
 local ROLES = { "Tank", "Healer", "DPS" }
 local indent = {}
@@ -54,6 +52,7 @@ local function hasLeaderboard()
 end
 
 local function lbValueText(r)
+  if r.week then return tostring(r.week) end
   if lbBoard == "duels" or lbBoard == "rolls" then return string.format("%d-%d", r.wins or 0, r.losses or 0) end
   if lbBoard == "gold" then return L.formatMoney(r.value) end
   return tostring(r.value)
@@ -67,7 +66,9 @@ local function renderLeaderboardRow(row, r)
   row.lb.name:SetText(W.classColor(r.class ~= "" and r.class or nil) .. r.name .. "|r"
     .. (mine and (" " .. W.PINK .. "(you)|r") or ""))
   row.lb.value:SetText(lbValueText(r))
-  if lbBoard == "rolls" then
+  if r.total then
+    row.lb.net:SetText(tostring(r.total))
+  elseif lbBoard == "rolls" then
     local c = (r.net or 0) > 0 and W.GOOD or ((r.net or 0) < 0 and W.WAIT or W.MUTED)
     row.lb.net:SetText(c .. L.formatNetMoney(r.net) .. "|r")
   else
@@ -132,7 +133,10 @@ local function refreshLeaderboards()
   local W = ns.ui
   local db = _G.GayFurriesLeaderboardDB
   local now = (type(GetServerTime) == "function" and GetServerTime()) or (ns.now and ns.now()) or 0
-  local all = L.leaderboardRows(db, lbBoard, now)
+  -- Sephya's data never forgets people who left the guild: hide names not in our last roster scan unless the
+  -- "Former members" box is ticked (per character, off by default).
+  local keep = not ns.opt("lbShowFormer", false) and L.lbRosterFilter(ns.db and ns.db.guild and ns.db.guild.members)
+  local all = L.leaderboardRows(db, lbBoard, now, lbBy, keep or nil)
   lbShown = L.sortLeaderboard(all, lbSortKey, lbReverse)
   local me = L.fullName(ns.unitName("player"))
   lbMe = me and string.lower(me) or nil
@@ -150,13 +154,19 @@ local function refreshLeaderboards()
     frame.emptyState = nil
   end
   local pink = W.C.pink
+  local combined = board.total ~= nil   -- PvP / deaths: "This week" and "Total" side by side
   for _, h in ipairs(frame.lbHeaders) do
     local title = h.key == "value" and LB_VALUE_TITLE[lbBoard] or h.title
     local key = (h.key == "value" and (lbBoard == "duels" or lbBoard == "rolls")) and "record" or h.key
     if h.key == "net" then key = "value" end
+    if combined and (h.key == "value" or h.key == "net") then
+      local by = h.key == "value" and "week" or "total"
+      title, key = (by == "week" and "This week" or "Total"), "by:" .. by
+    end
     h.sortKey = key
-    h:SetShown(h.key ~= "net" or lbBoard == "rolls")
-    local active = key == lbSortKey
+    h:SetShown(h.key ~= "net" or lbBoard == "rolls" or combined)
+    local active = (key == lbSortKey and not (combined and key == "rank"))
+      or (key == "by:" .. lbBy and lbSortKey == "rank")
     -- natural order: rank and name go up, numbers go down
     local up = (key == "rank" or key == "name") ~= lbReverse
     h.text:SetText(title .. (active and (up and " ^" or " v") or ""))
@@ -176,6 +186,7 @@ local function refresh()
   for _, h in ipairs(frame.headers) do h:SetShown(not lbView) end
   for _, h in ipairs(frame.lbHeaders) do h:SetShown(lbView) end
   boardButton:SetShown(lbView)
+  formerCheck:SetShown(lbView)
   frame.legend:SetShown(not lbView)
   if lbView then return refreshLeaderboards() end
   local g = ns.db and ns.db.guild
@@ -352,11 +363,11 @@ local function create()
   end
 
   -- Leaderboards view: board picker in place of the filters
-  boardButton = W.button(frame, "Board: PvP week", 150, 20, function()
+  boardButton = W.button(frame, "Board: PvP kills", 150, 20, function()
     local items = {}
     for _, b in ipairs(L.LB_BOARDS) do
       table.insert(items, { text = b.text, func = function()
-        lbBoard, lbSortKey, lbReverse, offset = b.key, "rank", false, 0
+        lbBoard, lbSortKey, lbReverse, lbBy, offset = b.key, "rank", false, "week", 0
         refresh()
       end })
     end
@@ -364,6 +375,13 @@ local function create()
   end)
   boardButton:SetPoint("TOPLEFT", 12, -top - 2)
   boardButton:Hide()
+  formerCheck = W.check(frame, "Former members", function() return ns.opt("lbShowFormer", false) end, function(v)
+    ns.setOpt("lbShowFormer", v)
+    offset = 0
+    refresh()
+  end)
+  formerCheck:SetPoint("TOPLEFT", 172, -top)
+  formerCheck:Hide()
 
   -- Column headers (click to sort)
   frame.headers = {}
@@ -402,7 +420,14 @@ local function create()
     hl:SetAllPoints()
     hl:SetColorTexture(1, 1, 1, 0.1)
     h:SetScript("OnClick", function(self)
-      if lbSortKey == self.sortKey then
+      local by = string.match(self.sortKey or "", "^by:(%a+)$")
+      if by then   -- PvP / deaths: rank by this column
+        if lbSortKey == "rank" and lbBy == by then
+          lbReverse = not lbReverse
+        else
+          lbBy, lbSortKey, lbReverse = by, "rank", false
+        end
+      elseif lbSortKey == self.sortKey then
         lbReverse = not lbReverse
       else
         lbSortKey, lbReverse = self.sortKey or "rank", false
@@ -532,6 +557,18 @@ function ns.toggleGuildWindow(show)
 end
 
 ns.commands["guild"] = function() ns.toggleGuildWindow() end
+
+-- The guild window on its Leaderboards view (Sephya's boards), from /gf lb and the minimap menu.
+function ns.openLeaderboards()
+  if not hasLeaderboard() then
+    ns.print("no leaderboard data: GayFurriesLeaderboard isn't loaded (it ships in the same download)")
+    return
+  end
+  view, offset = "leaderboards", 0
+  ns.toggleGuildWindow(true)
+end
+ns.commands["lb"] = function() ns.openLeaderboards() end
+ns.commands["leaderboard"] = ns.commands["lb"]
 
 -- Keep the window current when a new scan lands.
 local baseUpdate = ns.updateUI

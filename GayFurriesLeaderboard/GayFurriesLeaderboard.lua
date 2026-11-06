@@ -46,34 +46,67 @@ local function ApiLifetimeKills()
     return nil
 end
 
-local function CurrentKills()
-    if db.source == "log" then
-        return db.logKills or 0
+-- GFoA: per-character counters. GayFurriesLeaderboardDB is account-wide (## SavedVariables), so these counters used to
+-- be shared by every character on the account: an alt's deaths landed on the main's total and alts got wrong weekly
+-- kills. They now live in db.chars["First Surname"]; the shared board (members, duels, rolls) and settings stay top-level.
+-- Migration: the first character to log in after this update takes over the old top-level values (it owns the old
+-- totals); every other character starts at 0 with its own baselines. The old top-level fields are left in place, unused,
+-- so an older copy of the addon can still read the file; db.migratedChars = true marks that the hand-over happened.
+local CHAR_FIELDS = { "deaths", "logKills", "weekId", "weekBase", "dWeekBase" }
+local function Char()
+    local me = MyName() or "?"
+    db.chars = db.chars or {}
+    local c = db.chars[me]
+    if not c then
+        local first = UnitName("player")
+        if first and first ~= me and db.chars[first] then -- made while only the first name was known
+            c, db.chars[first] = db.chars[first], nil
+        else
+            c = { baseSource = db.source }
+            if not db.migratedChars then
+                for _, k in ipairs(CHAR_FIELDS) do c[k] = db[k] end
+            end
+        end
+        db.migratedChars = true
+        db.chars[me] = c
     end
-    return ApiLifetimeKills() or db.logKills or 0
+    return c
+end
+
+local function CurrentKills()
+    local c = Char() -- GFoA: per character
+    if db.source == "log" then
+        return c.logKills or 0
+    end
+    return ApiLifetimeKills() or c.logKills or 0
 end
 
 -- Updates and returns the player's own entry.
 local function UpdateOwn()
+    local c = Char() -- GFoA: per character (was db.*)
     local wk = CurrentWeekId()
     local kills = CurrentKills()
-    local deaths = db.deaths or 0
+    local deaths = c.deaths or 0
 
-    if db.weekId ~= wk then -- new week: re-baseline both weekly counters
-        db.weekId = wk
-        db.weekBase = kills
-        db.dWeekBase = deaths
+    if c.weekId ~= wk then -- new week: re-baseline both weekly counters
+        c.weekId = wk
+        c.weekBase = kills
+        c.dWeekBase = deaths
     end
-    if not db.weekBase then db.weekBase = kills end
-    if not db.dWeekBase then db.dWeekBase = deaths end
-    if kills < db.weekBase then db.weekBase = kills end
-    if deaths < db.dWeekBase then db.dWeekBase = deaths end
+    -- GFoA: /gpvp source is account-wide but the kill base is per character; re-baseline one taken from the other source
+    if c.baseSource ~= db.source then c.baseSource = db.source; c.weekBase = kills end
+    if not c.weekBase then c.weekBase = kills end
+    if not c.dWeekBase then c.dWeekBase = deaths end
+    -- GFoA fix: a lower kill count (another character on this account-wide DB, or a bad read) used to lower the
+    -- base, so the next normal reading counted the whole difference as this week's kills. Clamp at 0 instead.
+    if deaths < c.dWeekBase then c.dWeekBase = deaths end
 
     local _, class = UnitClass("player")
     local m = {
-        total = kills, weekly = kills - db.weekBase,
-        dTotal = deaths, dWeekly = deaths - db.dWeekBase,
-        gold = GetMoney() or 0,
+        total = kills, weekly = math.max(0, kills - c.weekBase),
+        dTotal = deaths, dWeekly = deaths - c.dWeekBase,
+        -- GFoA fix: Hidden Mode also hides your own saved entry (SavedVariables get uploaded to the guild Discord)
+        gold = (db.shareGold == false) and -1 or (GetMoney() or 0),
         week = wk, class = class or "", updated = time(),
     }
     local me = MyName()
@@ -324,7 +357,8 @@ local function OnRollMessage(msg)
     end
 
     for i, c in ipairs(rollChains) do
-        if c.last == mx and c.lastBy ~= who and (not c.second or c.second == who) then
+        -- GFoA fix: the opener (c.first) may continue the chain too; before, a 1 rolled by the opener was never matched
+        if c.last == mx and c.lastBy ~= who and (not c.second or c.second == who or c.first == who) then
             c.second = c.second or who
             c.lastBy, c.last, c.time, c.n = who, result, now, c.n + 1
             if result == 1 then -- this player lost
@@ -363,8 +397,8 @@ local function CommitTrade()
     if net == 0 then return end
     local me, now = MyName(), GetServerTime()
     for _, d in ipairs(db.rolls or {}) do
-        if now - d.t > 1800 then break end              -- rolls are newest first
-        if not d.bet then
+        -- GFoA fix: skip old rows instead of stopping; a late-received older roll can sit above newer ones
+        if now - d.t <= 1800 and not d.bet then
             local ok
             if net > 0 then ok = (d.w == me and d.l == partner) else ok = (d.l == me and d.w == partner) end
             if ok then
@@ -1470,6 +1504,7 @@ local function IsHonorKillMessage(msg)
         end
     end
     if honorPattern and msg:find(honorPattern) then return true end
+    if msg:find("dishonorable", 1, true) then return false end -- GFoA fix: "dishonorable kill" contains "honorable kill"
     return msg:find("honorable kill", 1, true) ~= nil
 end
 
@@ -1498,7 +1533,7 @@ ev:SetScript("OnEvent", function(_, event, ...)
         db = GayFurriesLeaderboardDB
         db.members = db.members or {}
         db.source = db.source or "api"
-        db.deaths = db.deaths or 0
+        -- GFoA: db.deaths is no longer defaulted here; deaths are per character in db.chars (see Char())
         if not db.theme then -- migrate from the old toggles
             db.theme = db.straight and "straight" or (db.cat and "cat" or "gay")
         end
@@ -1543,13 +1578,15 @@ ev:SetScript("OnEvent", function(_, event, ...)
 
     elseif event == "PLAYER_DEAD" then
         if not db then return end
-        db.deaths = (db.deaths or 0) + 1
+        local c = Char() -- GFoA: per character
+        c.deaths = (c.deaths or 0) + 1
         if ready then ScheduleBroadcast() end
 
     elseif event == "CHAT_MSG_COMBAT_HONOR_GAIN" then
         -- the "X dies, honorable kill" chat line: used for the fallback kill counter
         if db and IsHonorKillMessage((...)) then
-            db.logKills = (db.logKills or 0) + 1
+            local c = Char() -- GFoA: per character
+            c.logKills = (c.logKills or 0) + 1
         end
         if ready then ScheduleBroadcast() end
 
@@ -1569,26 +1606,28 @@ SlashCmdList["GUILDPVPBOARD"] = function(msg)
     msg = (msg or ""):lower()
     if msg == "reset" then
         db.members = {}
-        db.weekBase = nil
-        db.dWeekBase = nil
+        local c = Char() -- GFoA: re-baselines this character's weeks only; the other characters keep theirs
+        c.weekBase = nil
+        c.dWeekBase = nil
         print("|cff33ff99GayFurriesLeaderboard:|r data cleared.")
         Broadcast()
     elseif msg == "debug" then
         local api = ApiLifetimeKills()
+        local c = Char() -- GFoA: this character's counters
         print("|cff33ff99GayFurriesLeaderboard debug|r")
         print("  my full name:", MyName(), "| UnitName:", tostring((UnitName("player"))), "second value:", tostring((select(2, UnitName("player")))))
         print("  GetPVPLifetimeStats exists:", GetPVPLifetimeStats ~= nil, "value:", tostring(api))
-        print("  kills counted from honor messages:", db.logKills or 0)
+        print("  kills counted from honor messages:", c.logKills or 0)
         print("  source in use:", db.source)
-        print("  deaths counted:", db.deaths or 0, "weekly base:", tostring(db.dWeekBase))
+        print("  deaths counted:", c.deaths or 0, "weekly base:", tostring(c.dWeekBase))
         print("  sharing gold:", tostring(db.shareGold ~= false))
         local gs = 0
         for _ in pairs(guildSet) do gs = gs + 1 end
         print("  duels saved:", #(db.duels or {}), "deathrolls saved:", #(db.rolls or {}), "guild roster names known:", gs)
-        print("  week id:", CurrentWeekId(), "kill week base:", tostring(db.weekBase))
+        print("  week id:", CurrentWeekId(), "kill week base:", tostring(c.weekBase))
     elseif msg == "source api" or msg == "source log" then
         db.source = msg:match("source (%a+)")
-        db.weekBase = nil -- re-baseline weekly
+        Char().weekBase = nil -- re-baseline weekly (GFoA: this character; the others re-baseline via baseSource)
         print("|cff33ff99GayFurriesLeaderboard:|r kill source set to", db.source)
         Broadcast()
     elseif msg == "clearduels" then
