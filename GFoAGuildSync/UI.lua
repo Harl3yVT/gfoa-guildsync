@@ -188,7 +188,7 @@ local function createMinimapButton()
 end
 
 function ns.menuItems()
-  return {
+  local items = {
     { text = "Status window", func = function() ns.toggleFrame() end },
     { text = "Guild window", func = function() ns.toggleGuildWindow() end },
     { text = "Profession cooldowns", func = function() ns.toggleCooldowns() end },
@@ -201,6 +201,22 @@ function ns.menuItems()
     { text = "Export for Discord", func = function() ns.showExport() end },
     { text = "Options", func = function() ns.openOptions() end },
   }
+  -- Sephya's GayFurriesLeaderboard ships in the same download; only listed when it's loaded.
+  if _G.GayFurriesLeaderboardFrame then
+    table.insert(items, #items, { text = "Leaderboard (Sephya's)", func = function()
+      local lb = _G.GayFurriesLeaderboardFrame
+      if lb then lb:SetShown(not lb:IsShown()) end
+    end })
+  end
+  return items
+end
+
+-- Hide or show GayFurriesLeaderboard's own minimap button (setting "leaderboardMinimapHidden", per character, off by
+-- default). Only Show/Hide on its frame; its position and settings stay its own.
+function ns.applyLeaderboardMinimap()
+  local b = _G.GayFurriesLeaderboardMinimapButton
+  if not b then return end
+  if ns.opt("leaderboardMinimapHidden", false) then b:Hide() else b:Show() end
 end
 
 function ns.toggleMinimap(show)
@@ -230,6 +246,7 @@ end
 ns.on("PLAYER_LOGIN", function()
   if not ns.settings.minimapHidden then ns.safe("minimap", createMinimapButton) end
   if ns.settings.frameShown then ns.safe("frame", ns.toggleFrame, true) end
+  ns.safe("leaderboardMinimap", ns.applyLeaderboardMinimap)
 end)
 
 ns.every(30, "ui", function() ns.updateUI() end)

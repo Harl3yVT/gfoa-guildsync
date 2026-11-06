@@ -1,6 +1,7 @@
 -- GFoA Guild Sync: shows data from the guild Discord (GFoAGuildSyncBotData, read only).
 --   * item tooltips: "Guild can craft: Testy (Tailoring 285)", "Guild already knows it" on recipes, "Reagent for:"
---   * unit tooltips: Discord check mark, role, "Altname is Thrall's alt", "Alts: ..."
+--   * unit tooltips: Discord check mark, role, "Altname is Thrall's alt", "Alts: ...", and your duel / deathroll
+--     record against them from Sephya's GayFurriesLeaderboard (when it's loaded)
 --   * Alt+right-click an item: menu with "Ask guild crafters" (sent only after that click)
 --   * guild / party / raid chat: " (Thrall's alt)" after lines from alts (a display filter, nothing is sent)
 --   * Blizzard guild list: check mark after members registered on Discord
@@ -93,12 +94,12 @@ local function itemTooltip(tt)
   local lines = {}
   if ns.opt("tooltipCrafters", true) then
     local list = ns.guildCrafters(name)
-    if #list > 0 then table.insert(lines, { "Guild can craft: " .. L.formatCrafters(list, 5), 0.83, 0.55, 1 }) end
+    if #list > 0 then table.insert(lines, { "Guild can craft: " .. L.formatCrafters(list, 5, ns.displayName), 0.83, 0.55, 1 }) end
     local target = L.recipeTarget(name)
     if target then
       local known = ns.guildCrafters(target)
       if #known > 0 then
-        table.insert(lines, { "Guild already knows it: " .. L.formatCrafters(known, 5), 0.83, 0.55, 1 })
+        table.insert(lines, { "Guild already knows it: " .. L.formatCrafters(known, 5, ns.displayName), 0.83, 0.55, 1 })
       end
     end
   end
@@ -123,29 +124,50 @@ local function itemTooltip(tt)
   end)
 end
 
+-- "You vs them: duels 3-1 · deathrolls 2-0" from Sephya's GayFurriesLeaderboard records (read only), or nil
+-- when that addon isn't loaded, it's you, or there are no records between you.
+local function headToHeadLine(name, surname)
+  local db = _G.GayFurriesLeaderboardDB
+  if type(db) ~= "table" then return nil end
+  local myFirst, mySurname = ns.unitName("player")
+  local me, other = L.fullName(myFirst, mySurname), L.fullName(name, surname)
+  if not me or not other or me == other then return nil end
+  local dw, dl = L.headToHead(db.duels, me, other)
+  local rw, rl = L.headToHead(db.rolls, me, other)
+  return L.headToHeadLine(dw, dl, rw, rl)
+end
+
 local function unitTooltip(tt)
   if not ns.opt("tooltipUnit", true) or not usable(tt) or not tt.GetUnit then return end
-  local discord = ns.discordData()
-  if not discord then return end
   local _, unit = tt:GetUnit()
   if not unit or ns.isSecret(unit) or not ns.call("UnitIsPlayer", unit) then return end
-  local name, _, realm = ns.unitName(unit)   -- on Forever the second value is a surname, not a realm
+  local name, surname, realm = ns.unitName(unit)   -- on Forever the second value is a surname, not a realm
   if type(name) ~= "string" or ns.isSecret(name) then return end
   if type(realm) == "string" and realm ~= "" and realm ~= ns.realmKey() then return end   -- discord names have no realm
-  local e = L.memberEntry(discord, name)
-  if not e then return end
-  local parts = {}
-  if e.registered then table.insert(parts, ns.CHECK .. " Discord") end
-  if type(e.role) == "string" and e.role ~= "" then
-    table.insert(parts, e.role .. ((type(e.spec) == "string" and e.spec ~= "") and (" (" .. e.spec .. ")") or ""))
+  local h2h = headToHeadLine(name, surname)
+  local discord = ns.discordData()
+  local e = discord and L.memberEntry(discord, name)
+  local parts, altLine, alts = {}, nil, {}
+  if e then
+    if e.registered then table.insert(parts, ns.CHECK .. " Discord") end
+    if type(e.role) == "string" and e.role ~= "" then
+      table.insert(parts, e.role .. ((type(e.spec) == "string" and e.spec ~= "") and (" (" .. e.spec .. ")") or ""))
+    end
+    -- The unit's own surname comes from UnitName; everyone else's from the roster / own characters.
+    local function disp(n)
+      if n == name then return L.fullName(name, surname) or n end
+      return ns.displayName(n)
+    end
+    altLine = L.altLine(discord, name, disp)
+    alts = L.altsOf(discord, name)
+    for i, a in ipairs(alts) do alts[i] = ns.displayName(a) end
   end
-  local altLine = L.altLine(discord, name)
-  local alts = L.altsOf(discord, name)
-  if #parts == 0 and not altLine and #alts == 0 then return end
+  if #parts == 0 and not altLine and #alts == 0 and not h2h then return end
   addOnce(tt, "unit:" .. name, function()
     if #parts > 0 then tt:AddLine("GFoA: " .. table.concat(parts, "  "), 0.83, 0.55, 1) end
     if altLine then tt:AddLine(altLine, 0.83, 0.55, 1) end
     if #alts > 0 then tt:AddLine("Alts: " .. table.concat(alts, ", "), 0.7, 0.7, 0.9, true) end
+    if h2h then tt:AddLine(h2h, 0.65, 0.62, 0.70) end
   end)
 end
 
@@ -199,7 +221,7 @@ local CHAT_EVENTS = {
 local function suffixFor(msg, author)
   if ns.isSecret(msg) or ns.isSecret(author) then return nil end
   if type(msg) ~= "string" or type(author) ~= "string" then return nil end
-  return L.altSuffix(ns.discordData(), author, msg)
+  return L.altSuffix(ns.discordData(), author, msg, ns.displayName)
 end
 
 -- Each chat frame calls the filter with the original message, so the suffix appears once per line per frame.
@@ -239,7 +261,7 @@ local function openAskMenu(link)
     { text = "Ask guild crafters: " .. name, func = function() ns.askCrafters(itemId, name) end },
   }
   if #list > 0 then
-    table.insert(items, { text = "|cff999999Can craft: " .. L.formatCrafters(list, 3) .. "|r", func = function() end })
+    table.insert(items, { text = "|cff999999Can craft: " .. L.formatCrafters(list, 3, ns.displayName) .. "|r", func = function() end })
   end
   table.insert(items, { text = "Cancel", func = function() end })
   ns.ui.popup(cursorAnchor, items, true)   -- another Alt+right-click shows the new item instead of just closing

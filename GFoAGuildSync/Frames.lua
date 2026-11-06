@@ -15,7 +15,7 @@ local function sortedCharacters()
 end
 
 local function charLabel(name, c)
-  return ns.ui.classColor(c.class) .. name .. "|r " .. ns.ui.MUTED .. tostring(c.level or "?") .. "|r"
+  return ns.ui.classColor(c.class) .. ns.displayName(name) .. "|r " .. ns.ui.MUTED .. tostring(c.level or "?") .. "|r"
 end
 
 -- One window = title + scrolling text list + a function that builds its lines.
@@ -103,7 +103,7 @@ local cooldowns = makeListWindow("GFoAGuildSyncCooldownFrame", "Profession coold
     table.sort(waiting, function(a, b) return (a.readyAt or 0) < (b.readyAt or 0) end)
     for _, list in ipairs({ ready, waiting }) do
       for _, r in ipairs(list) do
-        table.insert(lines, string.format("    %s: %s  %s  %s(heard %s)|r", r.who, r.name, cdText(r.readyAt, t),
+        table.insert(lines, string.format("    %s: %s  %s  %s(heard %s)|r", ns.displayName(r.who), r.name, cdText(r.readyAt, t),
           ns.ui.MUTED, ns.ago(r.heard)))
       end
     end
@@ -147,7 +147,7 @@ local attunements = makeListWindow("GFoAGuildSyncAttuneFrame", "Attunements and 
     table.insert(lines, ns.ui.MUTED .. "Attunements update when each character logs in.|r")
     table.insert(lines, "")
     local c = ns.myChar and ns.myChar()
-    local me = ns.call("UnitName", "player") or "this character"
+    local me = ns.displayName(ns.call("UnitName", "player")) or "this character"
     table.insert(lines, ns.ui.headerLine("Pre-raid checklist: " .. me))
     for _, row in ipairs(L.checklist(c, ns.config, itemCount)) do
       local mark = row.unknown and (ns.ui.MUTED .. "?|r") or (row.done and ns.CHECK or ns.CROSS)
@@ -172,7 +172,7 @@ local dungeons = makeListWindow("GFoAGuildSyncDungeonFrame", "Dungeon runs (21 d
       if type(r) == "table" then
         local when = date and date("%m-%d %H:%M", r.start or 0) or tostring(r.start)
         table.insert(lines, string.format("%s  %s  %s%s %s|r  %d boss%s  %s  %d in group", when,
-          tostring(r.zone), ns.ui.MUTED, tostring(r.character), tostring(r.levelAtStart or "?"), r.bossesKilled or 0,
+          tostring(r.zone), ns.ui.MUTED, tostring(ns.displayName(r.character)), tostring(r.levelAtStart or "?"), r.bossesKilled or 0,
           (r.bossesKilled == 1) and "" or "es", L.formatDuration((r.last or r.start or 0) - (r.start or 0)),
           type(r.members) == "table" and #r.members or 0))
       end
@@ -201,9 +201,9 @@ local levelling = makeListWindow("GFoAGuildSyncLevelFrame", "Levelling buddy", 4
   for i, r in ipairs(race) do
     local m = r.member
     local alt = L.altOf(discord, m.name)
-    table.insert(lines, string.format("%2d. %s%s|r %d%s%s%s", i, ns.ui.classColor(m.class), m.name or "?", m.level,
+    table.insert(lines, string.format("%2d. %s%s|r %d%s%s%s", i, ns.ui.classColor(m.class), ns.displayName(m.name) or "?", m.level,
       r.gain > 0 and ("  " .. ns.ui.GOOD .. "+" .. r.gain .. "|r") or "",
-      m.online and ("  " .. ns.ui.GOOD .. "online|r") or "", alt and ("  " .. ns.ui.MUTED .. alt .. "'s alt|r") or ""))
+      m.online and ("  " .. ns.ui.GOOD .. "online|r") or "", alt and ("  " .. ns.ui.MUTED .. ns.displayName(alt) .. "'s alt|r") or ""))
   end
   if #race == 0 then
     for _, l in ipairs(ns.ui.emptyLines("No roster scan yet", "Open the guild window, or wait a minute after login.")) do
@@ -234,7 +234,7 @@ finder = makeListWindow("GFoAGuildSyncFinderFrame", "Guildie finder", 400, 18, "
     tostring(myLevel or "?"), range, ns.ago(g and g.updated)) }
   for _, m in ipairs(list) do
     local role = L.roleOf(discord, m.name)
-    table.insert(lines, string.format("%s%s|r %d %s%s  %s%s|r", ns.ui.classColor(m.class), m.name or "?",
+    table.insert(lines, string.format("%s%s|r %d %s%s  %s%s|r", ns.ui.classColor(m.class), ns.displayName(m.name) or "?",
       m.level, ns.ui.className(m.class), role and (" - " .. role) or "", ns.ui.MUTED, m.zone or ""))
   end
   if #list == 0 then
@@ -309,7 +309,7 @@ local chars = makeListWindow("GFoAGuildSyncCharsFrame", "My characters", 420, 14
     if status == "main" then
       text = ns.CHECK .. " linked on Discord (main)"
     elseif status == "alt" then
-      text = ns.CHECK .. " linked on Discord (" .. main .. "'s alt)"
+      text = ns.CHECK .. " linked on Discord (" .. ns.displayName(main) .. "'s alt)"
     elseif status == "unlinked" then
       text = ns.CROSS .. " not linked yet: Show import code, then paste it in Discord"
     else

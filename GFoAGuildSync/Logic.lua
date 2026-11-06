@@ -295,11 +295,12 @@ function L.crafters(discord, itemName)
   return out
 end
 
--- " (Thrall's alt)" for a chat line by an alt, or nil. Never adds it twice.
-function L.altSuffix(discord, author, msg)
+-- " (Thrall's alt)" for a chat line by an alt, or nil. Never adds it twice. disp (optional) turns the main's
+-- name into the shown one ("Thrall Brightvale").
+function L.altSuffix(discord, author, msg, disp)
   local main = L.altOf(discord, author)
   if not main then return nil end
-  local suffix = " (" .. main .. "'s alt)"
+  local suffix = " (" .. (disp and disp(main) or main) .. "'s alt)"
   if type(msg) == "string" and string.sub(msg, -#suffix) == suffix then return nil end
   return suffix
 end
@@ -321,7 +322,7 @@ function L.filterRoster(members, filter, discord)
     if ok and filter.maxLevel and (m.level or 0) > filter.maxLevel then ok = false end
     if ok and search ~= "" then
       local hay = string.lower(table.concat({
-        m.name or "", m.zone or "", m.rank or "", m.note or "", L.altOf(discord, m.name) or "",
+        m.name or "", m.zone or "", m.rank or "", m.note or "", L.altOf(discord, m.name) or "", m.fullName or "",
       }, "\001"))
       if not string.find(hay, search, 1, true) then ok = false end
     end
@@ -382,11 +383,13 @@ function L.altsOf(discord, name)
   return out
 end
 
--- "Altname is Thrall's alt" or nil.
-function L.altLine(discord, name)
+-- "Altname is Thrall's alt" or nil. disp (optional) turns names into the shown ones ("Thrall Brightvale").
+function L.altLine(discord, name, disp)
   local main = L.altOf(discord, name)
   if not main then return nil end
-  return (L.stripRealm(name) or name) .. " is " .. main .. "'s alt"
+  local alt = L.stripRealm(name) or name
+  if disp then alt, main = disp(alt), disp(main) end
+  return alt .. " is " .. main .. "'s alt"
 end
 
 -- Role from the Discord data ("Tank", "Healer", "DPS") or nil.
@@ -516,13 +519,14 @@ function L.guildCrafters(itemName, discord, ...)
   return out
 end
 
--- "Testy (Tailoring 285), Other" for up to max (5) crafters, plus " +N more".
-function L.formatCrafters(list, max)
+-- "Testy (Tailoring 285), Other" for up to max (5) crafters, plus " +N more". disp (optional) turns names into
+-- the shown ones ("Testy Brightvale").
+function L.formatCrafters(list, max, disp)
   max = max or 5
   local parts = {}
   for i = 1, math.min(max, #list) do
     local e = list[i]
-    local s = e.name
+    local s = disp and disp(e.name) or e.name
     if e.prof then s = s .. " (" .. e.prof .. (e.skill and (" " .. e.skill) or "") .. ")" end
     table.insert(parts, s)
   end
@@ -896,6 +900,211 @@ function L.questLogRows(n, entry)
     end
   end
   return out
+end
+
+
+-- ---------------------------------------------------------------------------
+-- Head-to-head from Sephya's GayFurriesLeaderboard (its SavedVariable, read only)
+-- ---------------------------------------------------------------------------
+
+-- "First Surname" (the form GayFurriesLeaderboard stores), or just "First" without a surname. nil without a name.
+function L.fullName(first, surname)
+  if type(first) ~= "string" or first == "" then return nil end
+  if type(surname) == "string" and surname ~= "" then return first .. " " .. surname end
+  return first
+end
+
+-- Display names (display only: every key stays the first name). Returns lower(first) -> surname from
+--   * own characters: characters[name].surname (from UnitName, wins over the roster),
+--   * roster members: m.fullName "First Surname", only when its first word is m.name ("Minuscule Dog" for a
+--     registered "Minusculedog" gives nothing). "Name-Realm" names are skipped.
+--   * bot Discord data (optional third argument): discord.characters[name].surname, lowest priority.
+function L.surnameMap(members, characters, discord)
+  local map = {}
+  local dchars = type(discord) == "table" and type(discord.characters) == "table" and discord.characters or {}
+  for name, c in pairs(dchars) do
+    if type(name) == "string" and type(c) == "table" and type(c.surname) == "string" and c.surname ~= ""
+        and not string.find(name, "-", 1, true) then
+      map[string.lower(name)] = c.surname
+    end
+  end
+  for _, m in ipairs(type(members) == "table" and members or {}) do
+    if type(m) == "table" and type(m.name) == "string" and type(m.fullName) == "string"
+        and not string.find(m.name, "-", 1, true) then
+      local first, rest = string.match(m.fullName, "^%s*(%S+)%s+(.-)%s*$")
+      if first and rest ~= "" and string.lower(first) == string.lower(m.name) then
+        map[string.lower(m.name)] = rest
+      end
+    end
+  end
+  for name, c in pairs(type(characters) == "table" and characters or {}) do
+    if type(name) == "string" and type(c) == "table" and type(c.surname) == "string" and c.surname ~= ""
+        and not string.find(name, "-", 1, true) then
+      map[string.lower(name)] = c.surname
+    end
+  end
+  return map
+end
+
+-- "First Surname" when `surnames` (from L.surnameMap) knows the surname, else name unchanged (nil stays nil,
+-- "Name-Realm" stays as it is).
+function L.displayName(name, surnames)
+  if type(name) ~= "string" or name == "" or string.find(name, "-", 1, true) then return name end
+  local sn = type(surnames) == "table" and surnames[string.lower(name)]
+  if type(sn) == "string" and sn ~= "" then return name .. " " .. sn end
+  return name
+end
+
+-- Wins and losses of `me` against `other` in a list of { w = winner, l = loser } (duels or deathrolls).
+-- Names compare case-insensitively; entries between anyone else are skipped.
+function L.headToHead(list, me, other)
+  local wins, losses = 0, 0
+  if type(list) ~= "table" or type(me) ~= "string" or type(other) ~= "string" then return wins, losses end
+  me, other = string.lower(me), string.lower(other)
+  if me == other then return wins, losses end
+  for _, d in ipairs(list) do
+    if type(d) == "table" and type(d.w) == "string" and type(d.l) == "string" then
+      local w, l = string.lower(d.w), string.lower(d.l)
+      if w == me and l == other then
+        wins = wins + 1
+      elseif w == other and l == me then
+        losses = losses + 1
+      end
+    end
+  end
+  return wins, losses
+end
+
+-- "You vs them: duels 3-1 · deathrolls 2-0" (your wins-losses; each part only when it has records), or nil
+-- when neither has any.
+function L.headToHeadLine(duelWins, duelLosses, rollWins, rollLosses)
+  local parts = {}
+  if (duelWins or 0) + (duelLosses or 0) > 0 then
+    table.insert(parts, string.format("duels %d-%d", duelWins or 0, duelLosses or 0))
+  end
+  if (rollWins or 0) + (rollLosses or 0) > 0 then
+    table.insert(parts, string.format("deathrolls %d-%d", rollWins or 0, rollLosses or 0))
+  end
+  if #parts == 0 then return nil end
+  return "You vs them: " .. table.concat(parts, " \194\183 ")
+end
+
+-- ---------------------------------------------------------------------------
+-- Leaderboards view in the guild window, from Sephya's GayFurriesLeaderboardDB (read only, never written)
+-- ---------------------------------------------------------------------------
+
+-- Same weekly reset as GayFurriesLeaderboard: Tuesday 15:00 UTC (epoch 0 was a Thursday). Weekly counters only
+-- count while a member's `week` equals the current week id.
+L.LB_RESET_OFFSET = 5 * 86400 + 15 * 3600
+function L.lbWeekId(now)
+  return math.floor(((now or 0) - L.LB_RESET_OFFSET) / 604800)
+end
+
+-- Board picker order. field: member field; weekly: only counts in the current week; log: built from that list.
+L.LB_BOARDS = {
+  { key = "pvpWeek", text = "PvP week", field = "weekly", weekly = true },
+  { key = "pvpTotal", text = "PvP total", field = "total" },
+  { key = "deathsWeek", text = "Deaths week", field = "dWeekly", weekly = true },
+  { key = "deathsTotal", text = "Deaths total", field = "dTotal" },
+  { key = "gold", text = "Gold", field = "gold" },
+  { key = "duels", text = "Duels", log = "duels" },
+  { key = "rolls", text = "Deathrolls", log = "rolls" },
+}
+L.LB_BOARD = {}
+for _, b in ipairs(L.LB_BOARDS) do L.LB_BOARD[b.key] = b end
+
+local function lbNum(v) return type(v) == "number" and v or 0 end
+
+-- Rows for one board: { rank, name, class, value, wins?, losses?, net? }, best first. value is the number the
+-- board ranks by: kills / deaths / copper; duels: wins (ties: fewer losses); deathrolls: net copper (ties: wins).
+-- Hidden gold (-1) and bad entries are left out. Equal results share a rank ("1, 2, 2, 4").
+function L.leaderboardRows(db, board, now)
+  local rows = {}
+  local cfg = L.LB_BOARD[board]
+  if type(db) ~= "table" or not cfg then return rows end
+  local members = type(db.members) == "table" and db.members or {}
+  local function memberClass(name)
+    local m = members[name]
+    return type(m) == "table" and type(m.class) == "string" and m.class ~= "" and m.class or nil
+  end
+  if cfg.log then
+    local byName = {}
+    local function get(name, class)
+      local e = byName[name]
+      if not e then
+        e = { name = name, wins = 0, losses = 0, net = 0 }
+        byName[name] = e
+        table.insert(rows, e)
+      end
+      if not e.class and type(class) == "string" and class ~= "" then e.class = class end   -- newest first
+      return e
+    end
+    for _, d in ipairs(type(db[cfg.log]) == "table" and db[cfg.log] or {}) do
+      if type(d) == "table" and type(d.w) == "string" and d.w ~= "" and type(d.l) == "string" and d.l ~= "" then
+        local bet = (type(d.bet) == "number" and d.bet > 0) and d.bet or 0
+        local w, l = get(d.w, d.wc), get(d.l, d.lc)
+        w.wins, l.losses = w.wins + 1, l.losses + 1
+        w.net, l.net = w.net + bet, l.net - bet
+      end
+    end
+    for _, e in ipairs(rows) do
+      e.class = memberClass(e.name) or e.class or ""
+      if board == "duels" then e.value, e.net = e.wins, nil else e.value = e.net end
+    end
+  else
+    local week = L.lbWeekId(now)
+    for name, m in pairs(members) do
+      if type(name) == "string" and name ~= "" and type(m) == "table" then
+        local v = lbNum(m[cfg.field])
+        if cfg.weekly and m.week ~= week then v = 0 end   -- a stale week counts as 0
+        if not (board == "gold" and (type(m.gold) ~= "number" or m.gold < 0)) then   -- hidden gold: left out
+          table.insert(rows, { name = name, class = memberClass(name) or "", value = v })
+        end
+      end
+    end
+  end
+  local function tie(a) return board == "duels" and -a.losses or (board == "rolls" and a.wins or 0) end
+  table.sort(rows, function(a, b)
+    if a.value ~= b.value then return a.value > b.value end
+    if tie(a) ~= tie(b) then return tie(a) > tie(b) end
+    return string.lower(a.name) < string.lower(b.name)
+  end)
+  for i, r in ipairs(rows) do
+    local p = rows[i - 1]
+    r.rank = (p and p.value == r.value and tie(p) == tie(r)) and p.rank or i
+  end
+  return rows
+end
+
+-- A sorted copy of board rows by "rank" (1 first), "name" (A-Z), "value" or "record" (wins, then fewer losses;
+-- both biggest first). reverse flips the order. Ties keep rank order.
+function L.sortLeaderboard(rows, key, reverse)
+  local function k(r)
+    if key == "name" then return string.lower(r.name) end
+    if key == "value" then return r.value end
+    if key == "record" then return (r.wins or 0) * 100000 - (r.losses or 0) end
+    return -r.rank
+  end
+  local out = {}
+  for i, r in ipairs(rows) do out[i] = r end
+  table.sort(out, function(a, b)
+    local ka, kb = k(a), k(b)
+    if ka ~= kb then
+      if key == "name" then return (ka < kb) ~= (reverse and true or false) end
+      return (ka > kb) ~= (reverse and true or false)
+    end
+    if a.rank ~= b.rank then return a.rank < b.rank end
+    return string.lower(a.name) < string.lower(b.name)
+  end)
+  return out
+end
+
+-- "+12g 50s 0c" / "-3s 0c" / "0c" for a net copper amount.
+function L.formatNetMoney(c)
+  if type(c) ~= "number" then return "?" end
+  if c > 0 then return "+" .. L.formatMoney(c) end
+  if c < 0 then return "-" .. L.formatMoney(-c) end
+  return "0c"
 end
 
 return L
