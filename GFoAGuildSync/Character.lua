@@ -149,7 +149,10 @@ function ns.refreshCharacter(levelOverride)
   if not c then return end
   c.updated = ns.now()
   local _, surname = ns.unitName("player")
-  if surname then c.surname = surname end   -- WoW: Forever last name
+  if surname and c.surname ~= surname then   -- WoW: Forever last name
+    c.surname = surname
+    if ns.resetDisplayNames then ns.resetDisplayNames() end
+  end
   local xp, xpMax = ns.call("UnitXP", "player"), ns.call("UnitXPMax", "player")
   -- During logout / reload teardown the game answers level 1, XP 0 / 0 and money 0: keep the last good values.
   local glitch = not levelOverride and ns.logic.logoutGlitch(ns.call("UnitLevel", "player"), xpMax)

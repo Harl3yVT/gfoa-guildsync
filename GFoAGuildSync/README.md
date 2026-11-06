@@ -11,6 +11,8 @@ SavedVariables; it never acts for you, never types in chat and never edits guild
 
 ## Features
 
+- **Full names**: windows, tooltips and the chat alt note show characters as "First Surname" (WoW: Forever) when
+  the guild roster or your own characters know the surname; saved data and Discord stay keyed by first name.
 - **Guild crafters in tooltips**: "Guild can craft: Testy (Tailoring 285), Other" on items, "Guild already knows it"
   on recipes (Pattern:, Plans:, Formula: ...), and "Reagent for: Runecloth Bag" on reagents your characters use.
 - **Ask guild crafters**: Alt+right-click an item (bags, chat links) and pick "Ask guild crafters". The request goes
@@ -18,6 +20,14 @@ SavedVariables; it never acts for you, never types in chat and never edits guild
   Or `/gf ask <shift-click the item>`. The item tooltip then shows "Asked guild crafters 5m ago".
 - **Guild window** (`/gf guild`): roster with class colours, Discord check marks and "alt of"; filters for online,
   class, role, level range and search; optional "Group alts under their main".
+- **Leaderboard** (bundled, by Sephya): GayFurriesLeaderboard comes in the same download with its own window,
+  minimap button, settings and `/gpvp` command: PvP kills, deaths, gold, duels and deathrolls. The guild window's
+  "Sephya's window" button opens it. It skips its own roster requests while Guild Sync is running.
+  The guild window's **Roster | Leaderboards** switch shows its boards (PvP, deaths, gold, duels, deathrolls) in our
+  window too, your row in pink; read only, it never changes Sephya's data.
+  Our minimap menu lists "Leaderboard (Sephya's)" when it's loaded. Options can hide its minimap button ("Hide the
+  Leaderboard minimap button", off by default). Player tooltips show your record against that player from its
+  data, e.g. "You vs them: duels 3-1 · deathrolls 2-0" (your wins-losses; no line when you have none).
 - **Alts everywhere**: "Altname is Thrall's alt" and "Alts: ..." on player tooltips and guild window rows;
   " (Thrall's alt)" after chat lines from alts (display only).
 - **Profession cooldowns** (`/gf cd`): your characters' Mooncloth / transmutes, plus guildmates whose addons share

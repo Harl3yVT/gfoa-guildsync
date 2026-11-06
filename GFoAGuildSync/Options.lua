@@ -91,6 +91,8 @@ local function createPanel()
     function(v) ns.toggleMinimap(v) end))
   place(W.check(panel, "Show status window", function() return ns.settings.frameShown end,
     function(v) ns.toggleFrame(v) end))
+  check("Hide the Leaderboard minimap button (open it from this menu instead)", "leaderboardMinimapHidden", false,
+    function() ns.applyLeaderboardMinimap() end)
 
   section("Raids and officers")
   -- Loot minimum quality (raids)
@@ -138,8 +140,8 @@ local function createPanel()
     local status, main = ns.logic.linkStatus(ns.discordData(), me)
     local text = ({ main = ns.CHECK .. " linked on Discord (main)", unlinked = ns.CROSS .. " not linked on Discord yet",
       unknown = W.MUTED .. "no Discord data on this PC yet|r" })[status]
-      or (ns.CHECK .. " linked on Discord (" .. tostring(main) .. "'s alt)")
-    linkLabel:SetText(me .. ": " .. text)
+      or (ns.CHECK .. " linked on Discord (" .. tostring(ns.displayName(main)) .. "'s alt)")
+    linkLabel:SetText(ns.displayName(me) .. ": " .. text)
   end
   y = y - 22
 

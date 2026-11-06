@@ -15,6 +15,10 @@ SavedVariables. It never acts for you.
 - **Ask guild crafters**: Alt+right-click an item and pick "Ask guild crafters". Nothing is sent until you click.
 - **Guild window** (`/gfoa guild`): class colours, filters (online, class, role, level, search), alts grouped under
   their main.
+- **Guild leaderboard, bundled** (by Sephya, with permission): the Gay Furries of Azeroth Leaderboard installs with
+  this download. PvP kills, deaths, gold, duels and deathrolls in its own window (`/gpvp`), or in the guild window's
+  "Leaderboards" view. Already had it installed? Your stats and settings carry over.
+- **Full names**: characters show as "First Surname" everywhere.
 - **Alts everywhere**: "X is Y's alt" on player tooltips and guild window rows.
 - **Profession cooldowns** (`/gfoa cd`): yours and guildmates' who share theirs.
 - **Levelling buddy** (`/gfoa level`): XP/hour, time to next level and to 60, rested XP, and the guild's race to 60.

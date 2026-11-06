@@ -1,22 +1,39 @@
 -- GFoA Guild Sync: guild window (/gf guild). The last roster scan with class colours, filters and sorting, plus
 -- a check mark for members registered on Discord and "alt of" from the guild's Discord data, a role filter and
 -- an optional "group alts under their main" view. Display only.
+-- When Sephya's GayFurriesLeaderboard is loaded, a "Roster | Leaderboards" switch shows its boards in the same list
+-- (read only: we never write GayFurriesLeaderboardDB).
 local _, ns = ...
 local L = ns.logic
 
 local ROWS, ROW_H = 20, 16
 local COLUMNS = {
-  { key = "name", title = "Name", width = 150 },
+  { key = "name", title = "Name", width = 176 },   -- "First Surname"
   { key = "level", title = "Lvl", width = 34 },
   { key = "class", title = "Class", width = 66 },
   { key = "rank", title = "Rank", width = 92 },
   { key = "zone", title = "Zone", width = 140 },
-  { key = "main", title = "Alt of", width = 92 },
+  { key = "main", title = "Alt of", width = 122 },
   { key = "seen", title = "Seen", width = 62 },
 }
 local CLASSES = { "WARRIOR", "PALADIN", "HUNTER", "ROGUE", "PRIEST", "SHAMAN", "MAGE", "WARLOCK", "DRUID" }
 
-local frame, rows, slider, countText, classButton, roleButton
+-- Leaderboards view columns (same row frames, other font strings).
+local LB_COLUMNS = {
+  { key = "rank", title = "#", width = 44 },
+  { key = "name", title = "Name", width = 260 },
+  { key = "value", title = "", width = 160 },
+  { key = "net", title = "Net gold", width = 160 },
+}
+local LB_VALUE_TITLE = {
+  pvpWeek = "Kills this week", pvpTotal = "Kills", deathsWeek = "Deaths this week", deathsTotal = "Deaths",
+  gold = "Gold", duels = "Duels won-lost", rolls = "Deathrolls won-lost",
+}
+
+local frame, rows, slider, countText, classButton, roleButton, boardButton
+local view = "roster"   -- or "leaderboards"
+local lbBoard, lbSortKey, lbReverse = "pvpWeek", "rank", false
+local lbShown, lbMe = {}, nil
 local ROLES = { "Tank", "Healer", "DPS" }
 local indent = {}
 local filter = { onlineOnly = false, class = nil, role = nil, minLevel = nil, maxLevel = nil, search = "" }
@@ -32,19 +49,54 @@ local function seenText(m)
   return math.floor(d + 0.5) .. "d"
 end
 
+local function hasLeaderboard()
+  return type(_G.GayFurriesLeaderboardDB) == "table"
+end
+
+local function lbValueText(r)
+  if lbBoard == "duels" or lbBoard == "rolls" then return string.format("%d-%d", r.wins or 0, r.losses or 0) end
+  if lbBoard == "gold" then return L.formatMoney(r.value) end
+  return tostring(r.value)
+end
+
+local function renderLeaderboardRow(row, r)
+  local W = ns.ui
+  local mine = lbMe ~= nil and string.lower(r.name) == lbMe
+  row.mine:SetShown(mine)
+  row.lb.rank:SetText((mine and W.PINK or W.MUTED) .. r.rank .. "|r")
+  row.lb.name:SetText(W.classColor(r.class ~= "" and r.class or nil) .. r.name .. "|r"
+    .. (mine and (" " .. W.PINK .. "(you)|r") or ""))
+  row.lb.value:SetText(lbValueText(r))
+  if lbBoard == "rolls" then
+    local c = (r.net or 0) > 0 and W.GOOD or ((r.net or 0) < 0 and W.WAIT or W.MUTED)
+    row.lb.net:SetText(c .. L.formatNetMoney(r.net) .. "|r")
+  else
+    row.lb.net:SetText("")
+  end
+end
+
 local function render()
   if not frame or not frame:IsShown() then return end
   local W = ns.ui
   local discord = ns.discordData()
-  local maxOff = math.max(0, #shown - ROWS)
+  local lbView = view == "leaderboards"
+  local list = lbView and lbShown or shown
+  local maxOff = math.max(0, #list - ROWS)
   if offset > maxOff then offset = maxOff end
   if offset < 0 then offset = 0 end
   for i = 1, ROWS do
     local row = rows[i]
-    local m = shown[offset + i]
+    local m = (not lbView) and shown[offset + i] or nil
+    local r = lbView and lbShown[offset + i] or nil
     row.member = m
-    if m then
-      local name = (indent[m] and (W.MUTED .. "- |r") or "") .. W.classColor(m.class) .. (m.name or "?") .. "|r"
+    for _, fs in pairs(row.cols) do fs:SetShown(not lbView) end
+    for _, fs in pairs(row.lb) do fs:SetShown(lbView) end
+    if not lbView then row.mine:Hide() end
+    if r then
+      renderLeaderboardRow(row, r)
+      row:Show()
+    elseif m then
+      local name = (indent[m] and (W.MUTED .. "- |r") or "") .. W.classColor(m.class) .. (ns.displayName(m.name) or "?") .. "|r"
       if ns.opt("guildCheck", true) and L.isRegistered(discord, m.name) then name = name .. " " .. ns.CHECK end
       local dim = m.online and "" or W.MUTED
       row.cols.name:SetText(name)
@@ -52,7 +104,7 @@ local function render()
       row.cols.class:SetText(W.classColor(m.class) .. W.className(m.class) .. "|r")
       row.cols.rank:SetText(dim .. (m.rank or ""))
       row.cols.zone:SetText(dim .. (m.zone or ""))
-      row.cols.main:SetText(dim .. (L.altOf(discord, m.name) or ""))
+      row.cols.main:SetText(dim .. (ns.displayName(L.altOf(discord, m.name)) or ""))
       row.cols.seen:SetText(seenText(m))
       row:Show()
     else
@@ -76,8 +128,56 @@ local function render()
   end
 end
 
+local function refreshLeaderboards()
+  local W = ns.ui
+  local db = _G.GayFurriesLeaderboardDB
+  local now = (type(GetServerTime) == "function" and GetServerTime()) or (ns.now and ns.now()) or 0
+  local all = L.leaderboardRows(db, lbBoard, now)
+  lbShown = L.sortLeaderboard(all, lbSortKey, lbReverse)
+  local me = L.fullName(ns.unitName("player"))
+  lbMe = me and string.lower(me) or nil
+  local board = L.LB_BOARD[lbBoard]
+  boardButton:SetText("Board: " .. board.text)
+  countText:SetText(string.format("%d on %s, from Sephya's Leaderboard", #lbShown, board.text))
+  if #lbShown == 0 then
+    if lbBoard == "duels" or lbBoard == "rolls" then
+      frame.emptyState = { "No guild " .. string.lower(board.text) .. " yet",
+        "Sephya's Leaderboard records them as guildmates play." }
+    else
+      frame.emptyState = { "Nobody on this board yet", "Sephya's Leaderboard fills it in from guildmates' addons." }
+    end
+  else
+    frame.emptyState = nil
+  end
+  local pink = W.C.pink
+  for _, h in ipairs(frame.lbHeaders) do
+    local title = h.key == "value" and LB_VALUE_TITLE[lbBoard] or h.title
+    local key = (h.key == "value" and (lbBoard == "duels" or lbBoard == "rolls")) and "record" or h.key
+    if h.key == "net" then key = "value" end
+    h.sortKey = key
+    h:SetShown(h.key ~= "net" or lbBoard == "rolls")
+    local active = key == lbSortKey
+    -- natural order: rank and name go up, numbers go down
+    local up = (key == "rank" or key == "name") ~= lbReverse
+    h.text:SetText(title .. (active and (up and " ^" or " v") or ""))
+    if active then h.text:SetTextColor(pink[1], pink[2], pink[3]) else h.text:SetTextColor(0.65, 0.62, 0.70) end
+  end
+  render()
+end
+
 local function refresh()
   if not frame or not frame:IsShown() then return end
+  frame.leaderboard:SetShown(_G.GayFurriesLeaderboardFrame ~= nil)
+  local lbOk = hasLeaderboard()
+  if not lbOk then view = "roster" end
+  local lbView = view == "leaderboards"
+  for _, c in ipairs(frame.viewChips) do c:SetShown(lbOk and ((c.view == view) ~= c.inactive)) end
+  for _, w in ipairs(frame.rosterOnly) do w:SetShown(not lbView) end
+  for _, h in ipairs(frame.headers) do h:SetShown(not lbView) end
+  for _, h in ipairs(frame.lbHeaders) do h:SetShown(lbView) end
+  boardButton:SetShown(lbView)
+  frame.legend:SetShown(not lbView)
+  if lbView then return refreshLeaderboards() end
   local g = ns.db and ns.db.guild
   local members = g and g.members or {}
   local discord = ns.discordData()
@@ -110,7 +210,7 @@ local function rowTooltip(row)
   if not m or not GameTooltip then return end
   local discord = ns.discordData()
   GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
-  GameTooltip:AddLine(ns.ui.classColor(m.class) .. (m.name or "?") .. "|r")
+  GameTooltip:AddLine(ns.ui.classColor(m.class) .. (ns.displayName(m.name) or "?") .. "|r")
   GameTooltip:AddLine(string.format("Level %s %s, %s", tostring(m.level or "?"), ns.ui.className(m.class),
     m.rank or ""), 1, 1, 1)
   if m.zone and m.zone ~= "" then GameTooltip:AddLine(m.zone, 0.8, 0.8, 0.8) end
@@ -119,9 +219,10 @@ local function rowTooltip(row)
   local e = L.memberEntry(discord, m.name)
   if e then
     if e.registered then GameTooltip:AddLine(ns.CHECK .. " registered on Discord", 0.74, 0.89, 0.64) end
-    local altLine = L.altLine(discord, m.name)
+    local altLine = L.altLine(discord, m.name, ns.displayName)
     if altLine then GameTooltip:AddLine(altLine, 0.83, 0.55, 1) end
     local alts = L.altsOf(discord, m.name)
+    for i, a in ipairs(alts) do alts[i] = ns.displayName(a) end
     if #alts > 0 then GameTooltip:AddLine("Alts: " .. table.concat(alts, ", "), 0.7, 0.7, 0.9, true) end
     if type(e.role) == "string" and e.role ~= "" then
       GameTooltip:AddLine(e.role .. ((type(e.spec) == "string" and e.spec ~= "") and (" - " .. e.spec) or ""), 0.8, 0.8, 1)
@@ -218,6 +319,51 @@ local function create()
       refresh()
     end)
   group:SetPoint("TOPLEFT", 120, -top - 24)
+  frame.rosterOnly = { online, classButton, lvlLabel, minBox, dash, maxBox, searchLabel, search, scan, roleButton, group }
+
+  -- Sephya's GayFurriesLeaderboard ships in the same download; open its board (its own window and settings).
+  frame.leaderboard = W.button(frame, "Sephya's window", 110, 20, function()
+    local lb = _G.GayFurriesLeaderboardFrame
+    if lb then lb:SetShown(not lb:IsShown()) end
+  end)
+  frame.leaderboard:SetPoint("TOPRIGHT", -14, -top - 26)
+
+  -- Roster | Leaderboards switch, right end of the tab row (only while Sephya's data is there). Each view has an
+  -- active and an inactive chip; refresh() shows the right pair.
+  frame.viewChips = {}
+  local prev
+  for _, v in ipairs({ { "leaderboards", "Leaderboards" }, { "roster", "Roster" } }) do
+    local pair = {}
+    for _, active in ipairs({ true, false }) do
+      local c = W.chip(frame, v[2], active)
+      c.view, c.inactive = v[1], not active
+      if prev then c:SetPoint("RIGHT", prev, "LEFT", -6, 0) else c:SetPoint("TOPRIGHT", -12, -W.TOP) end
+      if not active then
+        c:SetScript("OnClick", function()
+          view, offset = v[1], 0
+          refresh()
+        end)
+      end
+      c:Hide()
+      table.insert(frame.viewChips, c)
+      table.insert(pair, c)
+    end
+    prev = pair[1]
+  end
+
+  -- Leaderboards view: board picker in place of the filters
+  boardButton = W.button(frame, "Board: PvP week", 150, 20, function()
+    local items = {}
+    for _, b in ipairs(L.LB_BOARDS) do
+      table.insert(items, { text = b.text, func = function()
+        lbBoard, lbSortKey, lbReverse, offset = b.key, "rank", false, 0
+        refresh()
+      end })
+    end
+    W.popup(boardButton, items)
+  end)
+  boardButton:SetPoint("TOPLEFT", 12, -top - 2)
+  boardButton:Hide()
 
   -- Column headers (click to sort)
   frame.headers = {}
@@ -241,6 +387,30 @@ local function create()
       refresh()
     end)
     table.insert(frame.headers, h)
+    x = x + c.width
+  end
+  frame.lbHeaders = {}
+  x = 12
+  for _, c in ipairs(LB_COLUMNS) do
+    local h = CreateFrame("Button", nil, frame)
+    h:SetSize(c.width, 18)
+    h:SetPoint("TOPLEFT", x, -top - 52)
+    local fs = h:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    fs:SetPoint("LEFT", 2, 0)
+    h.text, h.key, h.title = fs, c.key, c.title
+    local hl = h:CreateTexture(nil, "HIGHLIGHT")
+    hl:SetAllPoints()
+    hl:SetColorTexture(1, 1, 1, 0.1)
+    h:SetScript("OnClick", function(self)
+      if lbSortKey == self.sortKey then
+        lbReverse = not lbReverse
+      else
+        lbSortKey, lbReverse = self.sortKey or "rank", false
+      end
+      refresh()
+    end)
+    h:Hide()
+    table.insert(frame.lbHeaders, h)
     x = x + c.width
   end
   local rule = W.divider(frame)
@@ -279,6 +449,23 @@ local function create()
       fs:SetJustifyH("LEFT")
       if fs.SetWordWrap then fs:SetWordWrap(false) end
       row.cols[c.key] = fs
+      cx = cx + c.width
+    end
+    -- Leaderboards view: own font strings on the same row, and a pink band on your own row
+    row.mine = row:CreateTexture(nil, "BACKGROUND", nil, 1)
+    row.mine:SetAllPoints()
+    row.mine:SetColorTexture(W.C.pink[1], W.C.pink[2], W.C.pink[3], 0.2)
+    row.mine:Hide()
+    row.lb = {}
+    cx = 0
+    for _, c in ipairs(LB_COLUMNS) do
+      local fs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+      fs:SetPoint("LEFT", cx + 2, 0)
+      fs:SetWidth(c.width - 4)
+      fs:SetJustifyH("LEFT")
+      if fs.SetWordWrap then fs:SetWordWrap(false) end
+      fs:Hide()
+      row.lb[c.key] = fs
       cx = cx + c.width
     end
     row:SetScript("OnEnter", function(self) ns.safe("guildTooltip", rowTooltip, self) end)
@@ -327,6 +514,7 @@ local function create()
   local legend = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
   legend:SetPoint("BOTTOMRIGHT", -14, 12)
   legend:SetText(ns.CHECK .. " = on the guild Discord")
+  frame.legend = legend
 
   frame:SetScript("OnShow", refresh)
   return frame

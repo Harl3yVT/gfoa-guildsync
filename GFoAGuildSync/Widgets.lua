@@ -171,6 +171,8 @@ local function chip(parent, text, active)
   return b
 end
 
+W.chip = chip   -- also the guild window's Roster | Leaderboards switch
+
 function W.tabs(f, activeKey)
   local prev
   for _, item in ipairs(W.NAV) do

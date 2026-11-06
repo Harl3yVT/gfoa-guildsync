@@ -114,6 +114,23 @@ local function scan()
   if ns.updateUI then ns.updateUI() end
 end
 
+-- "First Surname" for display (keys stay first names). The surname map is rebuilt only when the roster scan or
+-- the saved data or the bot's Discord data table changes, or after ns.resetDisplayNames() (own surname learned).
+local surnames, surnamesGuild, surnamesDB, surnamesDiscord
+
+function ns.resetDisplayNames() surnames = nil end
+
+function ns.displayName(name)
+  local db = ns.db
+  if not db then return name end
+  local discord = ns.discordData and ns.discordData() or nil
+  if not surnames or surnamesGuild ~= db.guild or surnamesDB ~= db or surnamesDiscord ~= discord then
+    surnames = ns.logic.surnameMap(db.guild and db.guild.members, db.characters, discord)
+    surnamesGuild, surnamesDB, surnamesDiscord = db.guild, db, discord
+  end
+  return ns.logic.displayName(name, surnames)
+end
+
 -- Scans now if allowed, otherwise once the minute is up.
 local function scanThrottled()
   local wait = ns.config.rosterInterval - (ns.now() - lastScan)
