@@ -65,6 +65,26 @@ local function queryScores()
   lastQuery = ns.now()
   ns.queueComm("M?")
 end
+ns.queryGameScores = queryScores
+
+-- Rows for the guild window's "Paw Drop" leaderboard: names shown as "First Surname", class colour from the
+-- last roster scan. keep(name) as in L.leaderboardRows.
+function ns.gameLeaderboardRows(by, keep)
+  local me = ns.call("UnitName", "player")
+  local class = {}
+  for _, m in ipairs(ns.db and ns.db.guild and ns.db.guild.members or {}) do
+    if type(m) == "table" and type(m.name) == "string" then class[string.lower(m.name)] = m.class end
+  end
+  local rows = L.gameLeaderboardRows(peers(), myRecord(), me, by, ns.now())
+  local out = {}
+  for _, r in ipairs(rows) do
+    local short = r.name
+    r.name = ns.displayName and ns.displayName(short) or short
+    r.class = class[string.lower(short)] or ""
+    if not keep or keep(r.name) or r.mine then table.insert(out, r) end
+  end
+  return out
+end
 
 ns.on("CHAT_MSG_ADDON", function(_, prefix, msg, channel, sender)
   if prefix ~= L.COMM_PREFIX or channel ~= "GUILD" or type(msg) ~= "string" or ns.isSecret(msg) then return end
@@ -79,6 +99,7 @@ ns.on("CHAT_MSG_ADDON", function(_, prefix, msg, channel, sender)
   elseif kind == "M" and game_ == GAME then
     peers()[who] = { best = best, weekBest = weekBest, week = week, t = ns.now() }
     if boardPanel and boardPanel:IsShown() then ns.safe("gameBoard", ns.refreshGameBoard) end
+    if ns.refreshGuildWindow then ns.refreshGuildWindow() end   -- returns at once when it's closed
   end
 end)
 

@@ -1021,6 +1021,8 @@ L.LB_BOARDS = {
   { key = "duels", text = "Duels", log = "duels" },
   { key = "rolls", text = "Deathrolls", log = "rolls" },
   { key = "shame", text = "Wall of Shame", shame = true },   -- L.shameRows, not L.leaderboardRows
+  -- Minigame scores heard from guildmates' addons (L.gameLeaderboardRows, GameLogic.lua), not Sephya's data.
+  { key = "paw", text = "Paw Drop", game = "paw", total = "best" },
 }
 L.LB_BOARD = {}
 for _, b in ipairs(L.LB_BOARDS) do L.LB_BOARD[b.key] = b end
