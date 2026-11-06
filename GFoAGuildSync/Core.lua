@@ -6,7 +6,7 @@ local addonName, ns = ...
 
 ns.name = addonName or "GFoAGuildSync"
 ns.DB_VERSION = 1
-ns.ADDON_VERSION = "1.7.0"
+ns.ADDON_VERSION = "1.7.1"
 
 local frame = CreateFrame("Frame")
 ns.frame = frame
