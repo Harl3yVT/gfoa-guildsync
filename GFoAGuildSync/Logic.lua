@@ -1020,6 +1020,7 @@ L.LB_BOARDS = {
   { key = "gold", text = "Gold", field = "gold" },
   { key = "duels", text = "Duels", log = "duels" },
   { key = "rolls", text = "Deathrolls", log = "rolls" },
+  { key = "shame", text = "Wall of Shame", shame = true },   -- L.shameRows, not L.leaderboardRows
 }
 L.LB_BOARD = {}
 for _, b in ipairs(L.LB_BOARDS) do L.LB_BOARD[b.key] = b end
@@ -1039,7 +1040,7 @@ local function lbNum(v) return type(v) == "number" and v or 0 end
 function L.leaderboardRows(db, board, now, by, keep)
   local rows = {}
   local cfg = L.LB_BOARD[board]
-  if type(db) ~= "table" or not cfg then return rows end
+  if type(db) ~= "table" or not cfg or cfg.shame then return rows end
   local members = type(db.members) == "table" and db.members or {}
   local function memberClass(name)
     local m = members[name]
@@ -1132,6 +1133,60 @@ function L.lbRosterFilter(members)
     if full[base] then return true end
     return not string.find(base, " ", 1, true) and first[base] == true
   end
+end
+
+-- Wall of Shame (guild window, display only): guildmates in the last roster scan who hide their gold from Sephya's
+-- Leaderboard (gold -1), or who have no Leaderboard entry at all (no addon) and were online in the last `days` (30)
+-- days. Rows { rank, name ("First Surname"), class, crime = "gold" / "addon", value, quip }, gold hiders first.
+L.SHAME_QUIPS = {
+  gold = { "What are they hiding?", "Gold: classified", "Suspiciously rich. Or broke.", "Banks with the Shadow Council",
+    "Too ashamed of their gold", "Keeps it under the mattress" },
+  addon = { "Doesn't even have the addon", "Playing on hard mode", "Unranked and unbothered",
+    "Too cool for addons", "Still installing it, surely", "Lives in the dark ages" },
+}
+L.SHAME_CRIME = { gold = "Hides their gold", addon = "No addon" }
+
+local function quipFor(kind, name)
+  local list, h = L.SHAME_QUIPS[kind], 0
+  for i = 1, #name do h = (h * 31 + string.byte(name, i)) % 1000003 end
+  return list[h % #list + 1]
+end
+
+function L.shameRows(lbdb, members, days)
+  local rows = {}
+  if type(members) ~= "table" then return rows end
+  local byName, byFirst = {}, {}
+  for key, e in pairs(type(lbdb) == "table" and type(lbdb.members) == "table" and lbdb.members or {}) do
+    if type(key) == "string" and type(e) == "table" then
+      local k = string.lower(string.match(key, "^([^%-]*)") or key)
+      byName[k] = e
+      if not string.find(k, " ", 1, true) then byFirst[k] = e end
+    end
+  end
+  for _, m in ipairs(members) do
+    if type(m) == "table" and type(m.name) == "string" then
+      local full = type(m.fullName) == "string" and m.fullName ~= "" and m.fullName or m.name
+      local low = string.lower(full)
+      local e = byName[low] or byFirst[string.lower(string.match(full, "^%s*(%S+)") or full)]
+        or byFirst[string.lower(m.name)]
+      local crime
+      if e then
+        if e.gold == -1 then crime = "gold" end
+      elseif m.online or (type(m.lastOnlineDays) == "number" and m.lastOnlineDays <= (days or 30)) then
+        crime = "addon"
+      end
+      if crime then
+        table.insert(rows, { name = full, class = type(m.class) == "string" and m.class or "", crime = crime,
+          value = crime == "gold" and 2 or 1, quip = quipFor(crime, low) })
+      end
+    end
+  end
+  table.sort(rows, function(a, b)
+    if a.value ~= b.value then return a.value > b.value end
+    return string.lower(a.name) < string.lower(b.name)
+  end)
+  for i, r in ipairs(rows) do r.rank = i end
+  return rows
 end
 
 -- A sorted copy of board rows by "rank" (1 first), "name" (A-Z), "value" or "record" (wins, then fewer losses;

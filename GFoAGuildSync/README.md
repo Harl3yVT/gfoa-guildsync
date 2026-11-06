@@ -26,7 +26,8 @@ only reads game state and writes SavedVariables; it never acts for you, never ty
   "Sephya's window" button opens it. It skips its own roster requests while Guild Sync is running.
   The guild window's **Roster | Leaderboards** switch shows its boards (PvP, deaths, gold, duels, deathrolls) in our
   window too, your row in pink. PvP and deaths show this week and the total side by side (click either header to
-  rank by it). People who left the guild are hidden (tick **Former members** to show them); read only, it never
+  rank by it). People who left the guild are hidden (tick **Former members** to show them). The **Wall of Shame** board lists
+  guildmates who hide their gold, and recent ones (online in the last 30 days) with no Leaderboard addon at all; read only, it never
   changes Sephya's data.
   Our minimap menu lists "Guild leaderboards" (that view, also `/gf lb`) and "Leaderboard (Sephya's)" (its own window) when it's loaded. Options can hide its minimap button ("Hide the
   Leaderboard minimap button", off by default). Player tooltips show your record against that player from its

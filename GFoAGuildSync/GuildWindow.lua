@@ -52,6 +52,7 @@ local function hasLeaderboard()
 end
 
 local function lbValueText(r)
+  if r.crime then return ns.ui.WAIT .. (L.SHAME_CRIME[r.crime] or r.crime) .. "|r" end
   if r.week then return tostring(r.week) end
   if lbBoard == "duels" or lbBoard == "rolls" then return string.format("%d-%d", r.wins or 0, r.losses or 0) end
   if lbBoard == "gold" then return L.formatMoney(r.value) end
@@ -66,7 +67,9 @@ local function renderLeaderboardRow(row, r)
   row.lb.name:SetText(W.classColor(r.class ~= "" and r.class or nil) .. r.name .. "|r"
     .. (mine and (" " .. W.PINK .. "(you)|r") or ""))
   row.lb.value:SetText(lbValueText(r))
-  if r.total then
+  if r.quip then
+    row.lb.net:SetText(W.MUTED .. r.quip .. "|r")
+  elseif r.total then
     row.lb.net:SetText(tostring(r.total))
   elseif lbBoard == "rolls" then
     local c = (r.net or 0) > 0 and W.GOOD or ((r.net or 0) < 0 and W.WAIT or W.MUTED)
@@ -136,15 +139,27 @@ local function refreshLeaderboards()
   -- Sephya's data never forgets people who left the guild: hide names not in our last roster scan unless the
   -- "Former members" box is ticked (per character, off by default).
   local keep = not ns.opt("lbShowFormer", false) and L.lbRosterFilter(ns.db and ns.db.guild and ns.db.guild.members)
-  local all = L.leaderboardRows(db, lbBoard, now, lbBy, keep or nil)
+  local roster = ns.db and ns.db.guild and ns.db.guild.members
+  local all
+  if L.LB_BOARD[lbBoard].shame then
+    all = L.shameRows(db, roster, 30)   -- current guildmates only, so "Former members" doesn't apply
+  else
+    all = L.leaderboardRows(db, lbBoard, now, lbBy, keep or nil)
+  end
   lbShown = L.sortLeaderboard(all, lbSortKey, lbReverse)
   local me = L.fullName(ns.unitName("player"))
   lbMe = me and string.lower(me) or nil
   local board = L.LB_BOARD[lbBoard]
   boardButton:SetText("Board: " .. board.text)
   countText:SetText(string.format("%d on %s, from Sephya's Leaderboard", #lbShown, board.text))
+  if board.shame then
+    countText:SetText(string.format("%d on the Wall of Shame (gold hidden, or no addon and online in 30 days)",
+      #lbShown))
+  end
   if #lbShown == 0 then
-    if lbBoard == "duels" or lbBoard == "rolls" then
+    if board.shame then
+      frame.emptyState = { "Nobody to shame", "Everyone shares their gold and has the addon. Suspicious." }
+    elseif lbBoard == "duels" or lbBoard == "rolls" then
       frame.emptyState = { "No guild " .. string.lower(board.text) .. " yet",
         "Sephya's Leaderboard records them as guildmates play." }
     else
@@ -159,12 +174,14 @@ local function refreshLeaderboards()
     local title = h.key == "value" and LB_VALUE_TITLE[lbBoard] or h.title
     local key = (h.key == "value" and (lbBoard == "duels" or lbBoard == "rolls")) and "record" or h.key
     if h.key == "net" then key = "value" end
-    if combined and (h.key == "value" or h.key == "net") then
+    if board.shame and (h.key == "value" or h.key == "net") then
+      title, key = (h.key == "value" and "Crime" or "Verdict"), "value"
+    elseif combined and (h.key == "value" or h.key == "net") then
       local by = h.key == "value" and "week" or "total"
       title, key = (by == "week" and "This week" or "Total"), "by:" .. by
     end
     h.sortKey = key
-    h:SetShown(h.key ~= "net" or lbBoard == "rolls" or combined)
+    h:SetShown(h.key ~= "net" or lbBoard == "rolls" or combined or board.shame)
     local active = (key == lbSortKey and not (combined and key == "rank"))
       or (key == "by:" .. lbBy and lbSortKey == "rank")
     -- natural order: rank and name go up, numbers go down
