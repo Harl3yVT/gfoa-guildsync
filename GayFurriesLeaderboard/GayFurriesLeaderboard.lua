@@ -1,0 +1,1610 @@
+---------------------------------------------------------------------
+-- Gay Furries of Azeroth Leaderboard
+-- Three guild leaderboards: PvP kills, deaths (weekly + lifetime), gold.
+-- Target: WoW Forever client 1.60.1 (Classic-style API, Interface 16001)
+---------------------------------------------------------------------
+local PREFIX = "GPVPLB"
+
+-- Weekly reset: Tuesday at this UTC hour. Adjust to match your region's reset.
+local RESET_HOUR_UTC = 15
+local RESET_OFFSET = 5 * 86400 + RESET_HOUR_UTC * 3600 -- epoch 0 was a Thursday
+
+local SendAddonMessage = (C_ChatInfo and C_ChatInfo.SendAddonMessage) or _G.SendAddonMessage
+local RegisterPrefix = (C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix) or _G.RegisterAddonMessagePrefix
+
+-- On WoW: Forever every character has a first name AND a surname. UnitName() only
+-- hands back the first name (its second value is the surname, not a realm), so build
+-- the full "First Surname" name from GetUnitName, the same form guildmates show up
+-- under in the guild roster, chat and addon messages.
+local function MyName()
+    if GetUnitName then
+        local n = GetUnitName("player", false)
+        if n and n ~= "" then return n end
+    end
+    return (UnitName("player"))
+end
+
+local db
+local ready = false
+local board = "pvp" -- "pvp", "deaths" or "gold"
+local sortKey = "weekly"
+local sortAsc = false
+local Refresh -- forward declaration
+
+---------------------------------------------------------------------
+-- Stats
+---------------------------------------------------------------------
+local function CurrentWeekId()
+    return math.floor((GetServerTime() - RESET_OFFSET) / 604800)
+end
+
+local function ApiLifetimeKills()
+    if GetPVPLifetimeStats then
+        local hk = GetPVPLifetimeStats()
+        if type(hk) == "number" then return hk end
+    end
+    return nil
+end
+
+local function CurrentKills()
+    if db.source == "log" then
+        return db.logKills or 0
+    end
+    return ApiLifetimeKills() or db.logKills or 0
+end
+
+-- Updates and returns the player's own entry.
+local function UpdateOwn()
+    local wk = CurrentWeekId()
+    local kills = CurrentKills()
+    local deaths = db.deaths or 0
+
+    if db.weekId ~= wk then -- new week: re-baseline both weekly counters
+        db.weekId = wk
+        db.weekBase = kills
+        db.dWeekBase = deaths
+    end
+    if not db.weekBase then db.weekBase = kills end
+    if not db.dWeekBase then db.dWeekBase = deaths end
+    if kills < db.weekBase then db.weekBase = kills end
+    if deaths < db.dWeekBase then db.dWeekBase = deaths end
+
+    local _, class = UnitClass("player")
+    local m = {
+        total = kills, weekly = kills - db.weekBase,
+        dTotal = deaths, dWeekly = deaths - db.dWeekBase,
+        gold = GetMoney() or 0,
+        week = wk, class = class or "", updated = time(),
+    }
+    local me = MyName()
+    local first = UnitName("player")
+    if first and first ~= me then db.members[first] = nil end -- old first-name-only entry
+    db.members[me] = m
+    return m
+end
+
+---------------------------------------------------------------------
+-- Duels (guild members only)
+---------------------------------------------------------------------
+local guildSet = {}
+local lastRoster = 0
+
+-- GFoA Guild Sync (shipped in the same download) already asks for the roster every minute, and
+-- GUILD_ROSTER_UPDATE reaches both addons, so only ask ourselves when it isn't running.
+local function GuildSyncLoaded()
+    if C_AddOns and C_AddOns.IsAddOnLoaded then return C_AddOns.IsAddOnLoaded("GFoAGuildSync") end
+    return IsAddOnLoaded and IsAddOnLoaded("GFoAGuildSync")
+end
+
+local function RequestRoster()
+    if GuildSyncLoaded() then return end
+    if C_GuildInfo and C_GuildInfo.GuildRoster then
+        C_GuildInfo.GuildRoster()
+    elseif GuildRoster then
+        GuildRoster()
+    end
+end
+
+local function RebuildGuildSet()
+    local set = {}
+    for i = 1, (GetNumGuildMembers() or 0) do
+        local name = GetGuildRosterInfo(i)
+        if name then set[Ambiguate(name, "short")] = true end
+    end
+    if next(set) then guildSet = set end
+end
+
+-- Finds the full "First Surname" of a guild member. If only a first name is given,
+-- it is matched when exactly one guild member has that first name.
+local function ResolveGuildName(name)
+    if guildSet[name] then return name end
+    local found
+    for full in pairs(guildSet) do
+        if full:match("^(%S+)") == name then
+            if found then return nil end -- more than one guildmate shares that first name
+            found = full
+        end
+    end
+    return found
+end
+
+-- Turns a game string like "%1$s has defeated %2$s in a duel." into a Lua pattern.
+-- Returns the pattern and whether the two captures come in (loser, winner) order.
+-- The game always passes (winner, loser); translations just reorder the text.
+local function BuildDuelPattern(fmt)
+    if type(fmt) ~= "string" then return nil end
+    local i1 = fmt:find("%1$s", 1, true)
+    local i2 = fmt:find("%2$s", 1, true)
+    if not i1 or not i2 then return nil end
+    local pat = fmt:gsub("%%1%$s", "\1"):gsub("%%2%$s", "\2")
+    pat = pat:gsub("([%%%^%$%(%)%.%[%]%*%+%-%?])", "%%%1")
+    pat = pat:gsub("\1", "(.+)"):gsub("\2", "(.+)")
+    return "^" .. pat .. "$", i2 < i1
+end
+
+local duelPatterns
+local function ParseDuel(msg)
+    if not duelPatterns then
+        duelPatterns = {}
+        for _, fmt in ipairs({ DUEL_WINNER_KNOCKOUT, DUEL_WINNER_RETREAT }) do
+            local pat, swap = BuildDuelPattern(fmt)
+            if pat then duelPatterns[#duelPatterns + 1] = { pat, swap } end
+        end
+        if #duelPatterns == 0 then
+            duelPatterns[1] = { "^(.+) has defeated (.+) in a duel%.?$", false }
+        end
+    end
+    for _, e in ipairs(duelPatterns) do
+        local a, b = msg:match(e[1])
+        if a and b then
+            if e[2] then a, b = b, a end
+            return a, b -- winner, loser
+        end
+    end
+end
+
+-- returns true if this was a new duel (not a duplicate)
+local function RecordDuel(w, l, wc, lc, t)
+    db.duels = db.duels or {}
+    for _, d in ipairs(db.duels) do
+        if d.w == w and d.l == l and math.abs(d.t - t) <= 15 then return false end
+    end
+    table.insert(db.duels, 1, { w = w, l = l, wc = wc or "", lc = lc or "", t = t })
+    while #db.duels > 300 do table.remove(db.duels) end
+    return true
+end
+
+---------------------------------------------------------------------
+-- Networking
+-- Message: kills:killsWeekly:weekId:CLASS:deaths:deathsWeekly:copper
+-- copper is -1 if the player chose not to share their gold.
+---------------------------------------------------------------------
+local lastSend, pending = 0, false
+
+local function Broadcast()
+    if not ready or not IsInGuild() then return end
+    local m = UpdateOwn()
+    local gold = (db.shareGold == false) and -1 or m.gold
+    SendAddonMessage(PREFIX, string.format("%d:%d:%d:%s:%d:%d:%.0f",
+        m.total, m.weekly, m.week, m.class, m.dTotal, m.dWeekly, gold), "GUILD")
+    lastSend = GetTime()
+    if Refresh then Refresh() end
+end
+
+local function ScheduleBroadcast()
+    if pending then return end
+    pending = true
+    local wait = math.max(3, 10 - (GetTime() - lastSend))
+    C_Timer.After(wait, function()
+        pending = false
+        Broadcast()
+    end)
+end
+
+-- your own duels, from the system chat message
+local function OnSystemMessage(msg)
+    if not db or type(msg) ~= "string" then return end
+    local w, l = ParseDuel(msg)
+    if not w then return end
+    w, l = Ambiguate(w, "short"), Ambiguate(l, "short")
+    local me = MyName()
+    local myFirst = UnitName("player")
+    if w == myFirst then w = me end -- the chat line may use first names only
+    if l == myFirst then l = me end
+    if w ~= me and l ~= me then return end
+    local opp = ResolveGuildName((w == me) and l or w)
+    if not opp then return end -- guild members only
+    if w == me then l = opp else w = opp end
+
+    local _, myClass = UnitClass("player")
+    myClass = myClass or ""
+    local oppClass = (db.members[opp] and db.members[opp].class) or ""
+    local wc = (w == me) and myClass or oppClass
+    local lc = (l == me) and myClass or oppClass
+    local t = GetServerTime()
+    RecordDuel(w, l, wc, lc, t)
+    if w == me and IsInGuild() then -- the winner announces it; everyone else just receives it
+        SendAddonMessage(PREFIX, string.format("D:%s:%s:%s:%s:%d", w, wc, l, lc, t), "GUILD")
+    end
+    if Refresh then Refresh() end
+end
+
+---------------------------------------------------------------------
+-- Deathrolls (guild members only)
+-- A deathroll is a chain of /roll messages: A rolls 1-N, B rolls 1-(A's result), and so
+-- on until someone rolls a 1 and loses. The bet is read from the gold the loser trades
+-- to the winner afterwards (trade window), so it only needs one of the two to run this.
+---------------------------------------------------------------------
+-- returns "new", "updated" or false
+local function RecordRoll(w, l, wc, lc, t, bet)
+    db.rolls = db.rolls or {}
+    for _, d in ipairs(db.rolls) do
+        if d.w == w and d.l == l and math.abs(d.t - t) <= 5 then
+            if bet and bet >= 0 and (not d.bet or d.bet < 0) then
+                d.bet = bet
+                return "updated"
+            end
+            return false
+        end
+    end
+    table.insert(db.rolls, 1, { w = w, l = l, wc = wc or "", lc = lc or "", t = t, bet = (bet and bet >= 0) and bet or nil })
+    while #db.rolls > 500 do table.remove(db.rolls) end
+    return "new"
+end
+
+local function SendRoll(d)
+    if IsInGuild() then
+        SendAddonMessage(PREFIX, string.format("R:%s:%s:%s:%s:%d:%.0f", d.w, d.wc or "", d.l, d.lc or "", d.t, d.bet or -1), "GUILD")
+    end
+end
+
+-- "%s rolls %d (%d-%d)" as a Lua pattern, keeping track of the argument order
+local rollPattern, rollOrder
+local function ParseRoll(msg)
+    if not rollPattern then
+        local fmt = RANDOM_ROLL_RESULT
+        if type(fmt) == "string" and fmt:find("%%") then
+            local order = {}
+            local tmp = fmt:gsub("%%(%d*)%$?([sd])", function(n, k)
+                order[#order + 1] = tonumber(n) or (#order + 1)
+                return (k == "s") and "\1" or "\2"
+            end)
+            tmp = tmp:gsub("([%%%^%$%(%)%.%[%]%*%+%-%?])", "%%%1")
+            tmp = tmp:gsub("\1", "(.+)"):gsub("\2", "(%%d+)")
+            if #order == 4 then rollPattern, rollOrder = "^" .. tmp .. "$", order end
+        end
+        if not rollPattern then
+            rollPattern, rollOrder = "^(.+) rolls (%d+) %((%d+)%-(%d+)%)$", { 1, 2, 3, 4 }
+        end
+    end
+    local c = { msg:match(rollPattern) }
+    if #c < 4 then return end
+    local a = {}
+    for i = 1, 4 do a[rollOrder[i]] = c[i] end
+    return a[1], tonumber(a[2]), tonumber(a[3]), tonumber(a[4]) -- name, result, min, max
+end
+
+-- who is this roller? a guild member's full name, or the plain name for anyone else
+local function NormalizeRoller(name)
+    name = Ambiguate(name, "short")
+    local me, myFirst = MyName(), UnitName("player")
+    if name == me or name == myFirst then return me end
+    return ResolveGuildName(name) or name
+end
+
+local function IsGuildie(name)
+    return name == MyName() or guildSet[name] == true
+end
+
+local rollChains = {}
+
+local function FinishDeathroll(winner, loser)
+    if not next(guildSet) then return end                 -- roster not loaded yet
+    if not (IsGuildie(winner) and IsGuildie(loser)) then return end -- guild members only
+    local function classOf(n)
+        if n == MyName() then local _, c = UnitClass("player"); return c or "" end
+        return (db.members[n] and db.members[n].class) or ""
+    end
+    local d = { w = winner, l = loser, wc = classOf(winner), lc = classOf(loser), t = GetServerTime() }
+    if RecordRoll(d.w, d.l, d.wc, d.lc, d.t) == "new" then
+        SendRoll(d)
+        if Refresh then Refresh() end
+    end
+end
+
+local function OnRollMessage(msg)
+    if not db or type(msg) ~= "string" then return end
+    local name, result, mn, mx = ParseRoll(msg)
+    if not name or not result or mn ~= 1 or not mx or mx < 2 then return end
+    local who = NormalizeRoller(name)
+    local now = GetTime()
+
+    for i = #rollChains, 1, -1 do -- forget chains that went quiet
+        if now - rollChains[i].time > 180 then table.remove(rollChains, i) end
+    end
+
+    for i, c in ipairs(rollChains) do
+        if c.last == mx and c.lastBy ~= who and (not c.second or c.second == who) then
+            c.second = c.second or who
+            c.lastBy, c.last, c.time, c.n = who, result, now, c.n + 1
+            if result == 1 then -- this player lost
+                table.remove(rollChains, i)
+                local winner = (c.first == who) and c.second or c.first
+                if c.n >= 2 then FinishDeathroll(winner, who) end
+            end
+            return
+        end
+    end
+
+    if result == 1 then return end -- a lone 1 on the opening roll isn't a deathroll
+    for i = #rollChains, 1, -1 do   -- a re-rolled opening roll replaces the old one
+        if rollChains[i].lastBy == who and rollChains[i].n == 1 then table.remove(rollChains, i) end
+    end
+    rollChains[#rollChains + 1] = { first = who, last = result, lastBy = who, n = 1, time = now }
+    while #rollChains > 30 do table.remove(rollChains, 1) end
+end
+
+-- the bet: gold the loser trades to the winner shortly after a deathroll
+local trade = { partner = nil, agreed = false, give = 0, get = 0, done = false }
+
+local function TradePartnerName()
+    local n = GetUnitName and GetUnitName("NPC", false)
+    if not n or n == "" then n = UnitName("NPC") end
+    if (not n or n == "") and TradeFrameRecipientNameText then n = TradeFrameRecipientNameText:GetText() end
+    return n
+end
+
+local function CommitTrade()
+    if trade.done or not trade.agreed or not db then return end
+    trade.done = true
+    local partner = trade.partner and ResolveGuildName(Ambiguate(trade.partner, "short"))
+    if not partner then return end                      -- guild members only
+    local net = (trade.get or 0) - (trade.give or 0)    -- >0: I received gold, <0: I paid
+    if net == 0 then return end
+    local me, now = MyName(), GetServerTime()
+    for _, d in ipairs(db.rolls or {}) do
+        if now - d.t > 1800 then break end              -- rolls are newest first
+        if not d.bet then
+            local ok
+            if net > 0 then ok = (d.w == me and d.l == partner) else ok = (d.l == me and d.w == partner) end
+            if ok then
+                d.bet = math.abs(net)
+                SendRoll(d)
+                print("|cff33ff99GayFurriesLeaderboard:|r deathroll bet recorded: " .. ((GetCoinTextureString and GetCoinTextureString(d.bet)) or (math.floor(d.bet / 10000) .. "g"))
+                    .. " (" .. d.w .. " beat " .. d.l .. ")")
+                if Refresh then Refresh() end
+                return
+            end
+        end
+    end
+end
+
+local function OnTradeEvent(event, ...)
+    if event == "TRADE_SHOW" then
+        trade = { partner = TradePartnerName(), agreed = false, give = 0, get = 0, done = false }
+    elseif event == "TRADE_ACCEPT_UPDATE" then
+        local mine, theirs = ...
+        if (mine == 1 or mine == true) and (theirs == 1 or theirs == true) then
+            trade.partner = trade.partner or TradePartnerName()
+            trade.give = GetPlayerTradeMoney and GetPlayerTradeMoney() or 0
+            trade.get = GetTargetTradeMoney and GetTargetTradeMoney() or 0
+            trade.agreed = true
+        else
+            trade.agreed = false
+        end
+    elseif event == "TRADE_CLOSED" then
+        -- fallback if the "Trade complete." message isn't seen: commit unless it was cancelled
+        C_Timer.After(1.5, function() if trade.agreed and not trade.cancelled then CommitTrade() end end)
+    end
+end
+
+local function OnTradeSystemMessage(msg)
+    if type(msg) ~= "string" then return end
+    if msg == (ERR_TRADE_COMPLETE or "Trade complete.") then
+        CommitTrade()
+    elseif msg == (ERR_TRADE_CANCELLED or "Trade cancelled.") then
+        trade.agreed = false
+    end
+end
+
+local function OnAddonMessage(prefix, text, channel, sender)
+    if prefix ~= PREFIX or channel ~= "GUILD" then return end
+    local name = Ambiguate(sender, "short")
+    if name == MyName() then return end
+
+    if text == "REQ" then
+        -- stagger replies so the whole guild doesn't answer at once
+        C_Timer.After(1 + math.random() * 8, Broadcast)
+        return
+    end
+
+    -- duel result: D:winner:WINNERCLASS:loser:LOSERCLASS:time
+    local dw, dwc, dl, dlc, dt = text:match("^D:([^:]+):(%u*):([^:]+):(%u*):(%d+)$")
+    if dw then
+        if RecordDuel(dw, dl, dwc, dlc, tonumber(dt)) and Refresh then Refresh() end
+        return
+    end
+
+    -- deathroll: R:winner:WINNERCLASS:loser:LOSERCLASS:time:bet (bet is -1 until known)
+    local rw, rwc, rl, rlc, rt, rb = text:match("^R:([^:]+):(%u*):([^:]+):(%u*):(%d+):(-?%d+)$")
+    if rw then
+        if RecordRoll(rw, rl, rwc, rlc, tonumber(rt), tonumber(rb)) and Refresh then Refresh() end
+        return
+    end
+
+    local k, kw, wk, class, rest = text:match("^(%d+):(%d+):(%d+):(%u*)(.*)$")
+    if not k then return end
+    local d, dw, g = rest:match("^:(%d+):(%d+):(-?%d+)$") -- older clients don't send these
+    db.members[name] = {
+        total = tonumber(k), weekly = tonumber(kw), week = tonumber(wk), class = class,
+        dTotal = tonumber(d) or 0, dWeekly = tonumber(dw) or 0, gold = tonumber(g) or -1,
+        updated = time(),
+    }
+    if Refresh then Refresh() end
+end
+
+---------------------------------------------------------------------
+-- UI
+---------------------------------------------------------------------
+local ROW_H = 18
+
+-- pastel rainbow
+local RAINBOW = {
+    { 1, 0.68, 0.68 }, { 1, 0.84, 0.65 }, { 0.99, 1, 0.71 },
+    { 0.79, 1, 0.75 }, { 0.61, 0.96, 1 }, { 0.74, 0.70, 1 },
+}
+local GRAYS = {
+    { 0.78, 0.78, 0.78 }, { 0.70, 0.70, 0.70 }, { 0.62, 0.62, 0.62 },
+    { 0.54, 0.54, 0.54 }, { 0.46, 0.46, 0.46 }, { 0.38, 0.38, 0.38 },
+}
+local HEX_DEEP = { "ff7eb6", "ffa05c", "e8c32a", "5fcf8c", "5db7ff", "a784ff" } -- readable on light backgrounds
+local HEX_BRIGHT = { "ffadad", "ffd6a5", "fdffb6", "caffbf", "9bf6ff", "bdb2ff" } -- for dark backgrounds (tooltip)
+
+local HEX_CAT = { "c77dff", "9d4edd", "e0aaff", "b392f0", "7b2cbf", "d0a2ff" } -- purple title for the cat look
+local PURPLES = {
+    { 0.30, 0.08, 0.52 }, { 0.40, 0.12, 0.65 }, { 0.52, 0.20, 0.78 },
+    { 0.64, 0.32, 0.88 }, { 0.76, 0.48, 0.94 }, { 0.86, 0.64, 0.98 },
+}
+local HEX_BLUE = { "1e6fd9", "3b8cf0", "0f4fb5", "5aa0f5", "2a5fc4", "4d8de8" } -- title for the blue look
+local BLUES = {
+    { 0.75, 0.87, 1.00 }, { 0.60, 0.78, 1.00 }, { 0.45, 0.68, 0.98 },
+    { 0.30, 0.56, 0.95 }, { 0.20, 0.45, 0.88 }, { 0.12, 0.33, 0.75 },
+}
+local HEX_BERRII = { "e64980", "d6336c", "f06595", "c2255c", "ff6b9d", "e0457f" } -- pinks for the berrii title
+local PINKS = { -- candy stripes: pink / white
+    { 1.00, 0.62, 0.78 }, { 1.00, 0.97, 0.99 }, { 1.00, 0.62, 0.78 },
+    { 1.00, 0.97, 0.99 }, { 1.00, 0.62, 0.78 }, { 1.00, 0.97, 0.99 },
+}
+local CAT_ON = { 0.62, 0.32, 0.92 } -- (kept for the cat theme's track color)
+
+local function RainbowText(str, bright)
+    local hex = (type(bright) == "table") and bright or (bright and HEX_BRIGHT or HEX_DEEP)
+    local out = {}
+    for i = 1, #str do
+        out[#out + 1] = "|cff" .. hex[(i - 1) % 6 + 1] .. str:sub(i, i) .. "|r"
+    end
+    return table.concat(out)
+end
+
+-- cute prefixes, cutest first. Rank 1 = "The Cutest <name>"
+local CUTE = {
+    "The Cutest", "The Sparkliest", "The Fluffiest", "The Sweetest", "The Cuddliest",
+    "The Snuggliest", "The Dreamiest", "The Bubbliest", "The Coziest", "The Sleepiest",
+    "The Wobbliest", "The Tiniest",
+}
+local CUTE_FALLBACK = "Cute"
+
+local function FormatMoney(c)
+    if not c or c < 0 then return "Hidden" end
+    if GetCoinTextureString then return GetCoinTextureString(c) end
+    local g = math.floor(c / 10000)
+    local s = math.floor((c % 10000) / 100)
+    return string.format("%dg %ds %dc", g, s, c % 100)
+end
+
+-- compact money text: 1,250g 50s
+local function ShortMoney(c)
+    c = math.abs(c or 0)
+    local g, s, cp = math.floor(c / 10000), math.floor((c % 10000) / 100), c % 100
+    if g > 0 then
+        local str = tostring(g):reverse():gsub("(%d%d%d)", "%1,"):reverse()
+        str = str:gsub("^,", "")
+        return str .. "g" .. (s > 0 and (" " .. s .. "s") or "")
+    elseif s > 0 then
+        return s .. "s" .. (cp > 0 and (" " .. cp .. "c") or "")
+    end
+    return cp .. "c"
+end
+
+-- +green / -red net amount
+local function NetText(c)
+    if c > 0 then return "|cff2fb35a+" .. ShortMoney(c) .. "|r" end
+    if c < 0 then return "|cffe0443e-" .. ShortMoney(c) .. "|r" end
+    return "0g"
+end
+
+local function Hex(c)
+    return string.format("%02x%02x%02x", math.floor(c[1] * 255 + 0.5), math.floor(c[2] * 255 + 0.5), math.floor(c[3] * 255 + 0.5))
+end
+
+local function ClassColored(name, class)
+    local c = RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
+    if not c then return name end
+    return string.format("|cff%02x%02x%02x%s|r", math.floor(c.r * 255 + 0.5), math.floor(c.g * 255 + 0.5), math.floor(c.b * 255 + 0.5), name)
+end
+
+local function TimeAgo(sec)
+    if sec < 60 then return "just now" end
+    if sec < 3600 then return math.floor(sec / 60) .. "m ago" end
+    if sec < 86400 then return math.floor(sec / 3600) .. "h ago" end
+    return math.floor(sec / 86400) .. "d ago"
+end
+
+-- the leaderboards
+local BOARD_ORDER = { "pvp", "deaths", "gold", "duels", "rolls", "rollrank" }
+local BOARDS = {
+    pvp = { label = "PvP Kills", subtitle = "PvP Leaderboard", defaultSort = "weekly",
+        cols = { { key = "weekly", label = "Weekly" }, { key = "total", label = "Total" } } },
+    deaths = { label = "Deaths", subtitle = "Death Leaderboard", defaultSort = "dWeekly",
+        cols = { { key = "dWeekly", label = "Weekly" }, { key = "dTotal", label = "Total" } } },
+    gold = { label = "Gold", subtitle = "Wealth Leaderboard", defaultSort = "gold",
+        cols = { { key = "gold", label = "Total Wealth" } } },
+    duels = { label = "Duels", subtitle = "Duel Log", defaultSort = "weekly", cols = {} },
+    rolls = { label = "Deathroll", subtitle = "Deathroll History", defaultSort = "weekly", cols = {} },
+    rollrank = { label = "Roll Ranks", subtitle = "Deathroll Rankings", defaultSort = "net",
+        cols = { { key = "wins", label = "Record" }, { key = "net", label = "Net Gold" } } },
+}
+
+-- two looks: the default pastel one, and the "straight" gray one
+local THEMES = {
+    gay = {
+        bg = { 0.98, 0.93, 0.99, 0.98 }, border = { 1, 0.72, 0.86, 1 },
+        stripes = RAINBOW,
+        text = { 0.30, 0.15, 0.40 }, header = { 0.65, 0.32, 0.65 }, sub = { 0.78, 0.4, 0.78 },
+        label = { 0.55, 0.25, 0.60 }, shadow = { 0.3, 0.1, 0.4, 0.55 }, prefix = "d6609a", menuBg = { 0.93, 0.85, 0.97, 1 },
+        alt = 0.4, trackOff = { 0.86, 0.72, 0.92 }, trackOn = { 0.45, 0.45, 0.45 },
+        tabOn = { 1, 0.72, 0.86, 1 }, tabOff = { 0.92, 0.84, 0.96, 1 },
+        tabTextOn = { 0.30, 0.15, 0.40 }, tabTextOff = { 0.55, 0.30, 0.60 },
+    },
+    straight = {
+        bg = { 0, 0, 0, 0.10 }, border = { 0.72, 0.72, 0.72, 1 }, -- 90% transparent black
+        stripes = GRAYS,
+        text = { 0.85, 0.85, 0.85 }, header = { 0.65, 0.65, 0.65 }, sub = { 0.65, 0.65, 0.65 },
+        label = { 0.80, 0.80, 0.80 }, shadow = { 0, 0, 0, 0.8 }, prefix = "d6609a", menuBg = { 0.13, 0.13, 0.13, 0.98 },
+        alt = 0.06, trackOff = { 0.86, 0.72, 0.92 }, trackOn = { 0.45, 0.45, 0.45 },
+        tabOn = { 0.40, 0.40, 0.40, 0.95 }, tabOff = { 0.10, 0.10, 0.10, 0.55 },
+        tabTextOn = { 1, 1, 1 }, tabTextOff = { 0.70, 0.70, 0.70 },
+    },
+}
+-- purple and black "cat" look
+THEMES.cat = {
+    bg = { 0.06, 0.02, 0.11, 0.97 }, border = { 0.62, 0.32, 0.92, 1 },
+    stripes = PURPLES,
+    text = { 0.88, 0.78, 1.00 }, header = { 0.72, 0.50, 0.95 }, sub = { 0.78, 0.60, 1.00 },
+    label = { 0.82, 0.72, 0.97 }, shadow = { 0, 0, 0, 0.85 }, prefix = "c77dff", menuBg = { 0.12, 0.06, 0.20, 1 },
+    alt = 0.07, trackOff = { 0.30, 0.18, 0.45 }, trackOn = CAT_ON,
+    tabOn = { 0.50, 0.22, 0.80, 1 }, tabOff = { 0.16, 0.08, 0.27, 1 },
+    tabTextOn = { 1, 1, 1 }, tabTextOff = { 0.72, 0.56, 0.92 },
+}
+
+-- white and blue look (with the husky pup in the background)
+THEMES.blue = {
+    bg = { 0.95, 0.97, 1.00, 0.98 }, border = { 0.25, 0.50, 0.90, 1 },
+    stripes = BLUES,
+    text = { 0.10, 0.20, 0.45 }, header = { 0.20, 0.40, 0.75 }, sub = { 0.25, 0.50, 0.90 },
+    label = { 0.15, 0.35, 0.70 }, shadow = { 0.1, 0.2, 0.4, 0.35 }, prefix = "3a7bd5", menuBg = { 0.86, 0.92, 1.00, 1 },
+    alt = 0.55, trackOff = { 0.70, 0.82, 0.98 }, trackOn = { 0.25, 0.50, 0.90 },
+    tabOn = { 0.30, 0.55, 0.95, 1 }, tabOff = { 0.86, 0.92, 1.00, 1 },
+    tabTextOn = { 1, 1, 1 }, tabTextOff = { 0.20, 0.40, 0.75 },
+}
+
+-- pink and white look with the berrii cat photo behind a frosted veil
+THEMES.berrii = {
+    bg = { 1.00, 0.93, 0.96, 1 }, border = { 1.00, 0.52, 0.74, 1 },
+    stripes = PINKS,
+    text = { 0.36, 0.05, 0.24 }, header = { 0.58, 0.10, 0.38 }, sub = { 0.62, 0.14, 0.42 },
+    label = { 0.45, 0.07, 0.30 }, shadow = { 1, 1, 1, 0.95 }, prefix = "d6336c", menuBg = { 1.00, 0.90, 0.95, 1 },
+    alt = 0.35, trackOff = { 1.00, 0.80, 0.90 }, trackOn = { 0.90, 0.30, 0.55 },
+    tabOn = { 1.00, 0.45, 0.70, 1 }, tabOff = { 1.00, 0.94, 0.97, 0.92 },
+    tabTextOn = { 1, 1, 1 }, tabTextOff = { 0.58, 0.10, 0.38 },
+}
+
+-- db.theme is "gay", "straight", "cat", "blue" or "berrii"
+local function Theme()
+    return THEMES[(db and db.theme) or "gay"] or THEMES.gay
+end
+
+-- pastel mode: thin flat border. Straight mode: thick classic WoW dialog border.
+local BD_GAY = {
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Buttons\\WHITE8X8",
+    edgeSize = 2,
+    insets = { left = 2, right = 2, top = 2, bottom = 2 },
+}
+local BD_BERRII = { -- chunky pink border (a white line is drawn just inside it)
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Buttons\\WHITE8X8",
+    edgeSize = 5,
+    insets = { left = 5, right = 5, top = 5, bottom = 5 },
+}
+local BD_STRAIGHT = {
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+    edgeSize = 32,
+    insets = { left = 11, right = 11, top = 11, bottom = 11 },
+}
+
+local frame = CreateFrame("Frame", "GayFurriesLeaderboardFrame", UIParent, "BackdropTemplate")
+frame:SetSize(480, 480)
+frame:SetPoint("CENTER")
+frame:SetBackdrop(BD_GAY)
+frame:SetBackdropColor(0.98, 0.93, 0.99, 0.98)
+frame:SetBackdropBorderColor(1, 0.72, 0.86, 1)
+frame:SetMovable(true)
+frame:EnableMouse(true)
+frame:RegisterForDrag("LeftButton")
+frame:SetScript("OnDragStart", frame.StartMoving)
+frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
+frame:SetFrameStrata("DIALOG")
+frame:SetClampedToScreen(true)
+frame:SetResizable(true)
+if frame.SetResizeBounds then
+    frame:SetResizeBounds(460, 360, 900, 900)
+elseif frame.SetMinResize then
+    frame:SetMinResize(460, 360)
+    if frame.SetMaxResize then frame:SetMaxResize(900, 900) end
+end
+frame:Hide()
+tinsert(UISpecialFrames, "GayFurriesLeaderboardFrame") -- close with Esc
+
+-- resize grip: drag the little triangle at the bottom right
+local grip = CreateFrame("Button", nil, frame)
+grip:SetSize(16, 16)
+grip:SetPoint("BOTTOMRIGHT", -8, 8)
+grip:SetFrameLevel(frame:GetFrameLevel() + 40)
+grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+grip:SetScript("OnMouseDown", function() frame:StartSizing("BOTTOMRIGHT") end)
+grip:SetScript("OnMouseUp", function()
+    frame:StopMovingOrSizing()
+    if db then
+        db.width, db.height = math.floor(frame:GetWidth() + 0.5), math.floor(frame:GetHeight() + 0.5)
+    end
+end)
+
+-- background art: unicorn (default) or cat. Both .tga files ship in the addon folder.
+local UNICORN_ART = "Interface\\AddOns\\GayFurriesLeaderboard\\unicorn.tga"
+local CAT_ART = "Interface\\AddOns\\GayFurriesLeaderboard\\cat.tga"
+local PUP_ART = "Interface\\AddOns\\GayFurriesLeaderboard\\pup.tga"
+local THEME_ART = { gay = UNICORN_ART, cat = CAT_ART, blue = PUP_ART }
+local THEME_TITLE_HEX = { cat = HEX_CAT, blue = HEX_BLUE, berrii = HEX_BERRII }
+local unicorn = frame:CreateTexture(nil, "BORDER")
+unicorn:SetTexture(UNICORN_ART)
+unicorn:SetSize(230, 230)
+unicorn:SetPoint("BOTTOMRIGHT", -14, 12)
+unicorn:SetAlpha(0.6)
+
+-- berrii theme: the cat photo fills the window, covered by a frosted pink-white veil so text stays readable
+local BERRII_ART = "Interface\\AddOns\\GayFurriesLeaderboard\\berrii.tga"
+local bgPic = frame:CreateTexture(nil, "BORDER", nil, -1)
+bgPic:SetTexture(BERRII_ART)
+bgPic:SetPoint("TOPLEFT", 7, -7)
+bgPic:SetPoint("BOTTOMRIGHT", -7, 7)
+local bgVeil = frame:CreateTexture(nil, "BORDER", nil, 1)
+bgVeil:SetPoint("TOPLEFT", 7, -7)
+bgVeil:SetPoint("BOTTOMRIGHT", -7, 7)
+bgVeil:SetColorTexture(1, 0.94, 0.97, 0.52)
+local berriiLines = {} -- white line just inside the pink border
+for i = 1, 4 do
+    local t = frame:CreateTexture(nil, "BORDER", nil, 2)
+    t:SetColorTexture(1, 1, 1, 1)
+    berriiLines[i] = t
+end
+berriiLines[1]:SetPoint("TOPLEFT", 5, -5);     berriiLines[1]:SetPoint("TOPRIGHT", -5, -5);     berriiLines[1]:SetHeight(2)
+berriiLines[2]:SetPoint("BOTTOMLEFT", 5, 5);   berriiLines[2]:SetPoint("BOTTOMRIGHT", -5, 5);   berriiLines[2]:SetHeight(2)
+berriiLines[3]:SetPoint("TOPLEFT", 5, -5);     berriiLines[3]:SetPoint("BOTTOMLEFT", 5, 5);     berriiLines[3]:SetWidth(2)
+berriiLines[4]:SetPoint("TOPRIGHT", -5, -5);   berriiLines[4]:SetPoint("BOTTOMRIGHT", -5, 5);   berriiLines[4]:SetWidth(2)
+
+-- four little strawberries with different faces, one near each corner (berries.tga is a 2x2 sheet)
+local BERRIES_ART = "Interface\\AddOns\\GayFurriesLeaderboard\\berries.tga"
+local berries = {}
+do
+    local spots = { -- sheet cell, anchor, x, y
+        { 1, "TOPLEFT", -6, 6 }, { 2, "TOPRIGHT", 6, 10 },
+        { 3, "BOTTOMLEFT", -6, -6 }, { 4, "BOTTOMRIGHT", -28, -4 }, -- kept clear of the resize grip
+    }
+    local cells = { { 0, 0.5, 0, 0.5 }, { 0.5, 1, 0, 0.5 }, { 0, 0.5, 0.5, 1 }, { 0.5, 1, 0.5, 1 } }
+    for _, sp in ipairs(spots) do
+        local t = frame:CreateTexture(nil, "OVERLAY", nil, 6)
+        t:SetTexture(BERRIES_ART)
+        local c = cells[sp[1]]
+        t:SetTexCoord(c[1], c[2], c[3], c[4])
+        t:SetSize(38, 38)
+        t:SetPoint(sp[2], frame, sp[2], sp[3], sp[4])
+        berries[#berries + 1] = t
+    end
+end
+
+-- crop the (square) photo like "background-size: cover" so it never stretches
+local function LayoutBerrii()
+    local w, h = frame:GetWidth() - 14, frame:GetHeight() - 14
+    if w <= 0 or h <= 0 then return end
+    local r = w / h
+    if r >= 1 then
+        local half = 0.5 / r
+        bgPic:SetTexCoord(0, 1, 0.5 - half, 0.5 + half)
+    else
+        local half = 0.5 * r
+        bgPic:SetTexCoord(0.5 - half, 0.5 + half, 0, 1)
+    end
+end
+local function ShowBerrii(on)
+    for _, t in ipairs({ bgPic, bgVeil, berriiLines[1], berriiLines[2], berriiLines[3], berriiLines[4] }) do
+        if on then t:Show() else t:Hide() end
+    end
+    for _, t in ipairs(berries) do
+        if on then t:Show() else t:Hide() end
+    end
+    if on then LayoutBerrii() end
+end
+ShowBerrii(false)
+
+-- band across the top (pastel rainbow; hidden in straight mode)
+local stripeTex = {}
+for i, c in ipairs(RAINBOW) do
+    local t = frame:CreateTexture(nil, "ARTWORK")
+    t:SetColorTexture(c[1], c[2], c[3], 1)
+    t:SetPoint("TOPLEFT", 2, -2 - (i - 1) * 4)
+    t:SetPoint("TOPRIGHT", -2, -2 - (i - 1) * 4)
+    t:SetHeight(4)
+    stripeTex[i] = t
+end
+
+-- classic dialog title plaque (straight mode only)
+local plaque = frame:CreateTexture(nil, "OVERLAY")
+plaque:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Header")
+plaque:SetSize(340, 64)
+plaque:SetPoint("TOP", 0, 12)
+plaque:SetVertexColor(0.8, 0.8, 0.8)
+plaque:Hide()
+
+local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+title:SetPoint("TOP", 0, -34)
+
+local subtitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+subtitle:SetPoint("TOP", title, "BOTTOM", 0, -4)
+
+local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+close:SetPoint("TOPRIGHT", -4, -24)
+
+-- the three tab buttons across the top
+local SetBoard -- forward declaration
+local tabs = {}
+for i, id in ipairs(BOARD_ORDER) do
+    local b = CreateFrame("Button", nil, frame)
+    b:SetSize(70, 22)
+    b:SetPoint("TOPLEFT", frame, "TOP", -217 + (i - 1) * 73, -76)
+    b.bg = b:CreateTexture(nil, "BACKGROUND")
+    b.bg:SetAllPoints()
+    b.bg:SetColorTexture(1, 1, 1, 1)
+    b.fs = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    b.fs:SetPoint("CENTER")
+    b.fs:SetText(BOARDS[id].label)
+    b:SetScript("OnClick", function() SetBoard(id) end)
+    tabs[id] = b
+end
+
+-- column headers: click a sortable header to sort; click again to flip high/low
+local headerFS = {}
+local function StaticHeader(text, x, w, justify)
+    local fs = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    fs:SetPoint("TOPLEFT", x, -106)
+    fs:SetWidth(w)
+    fs:SetJustifyH(justify)
+    fs:SetText(text)
+    headerFS[#headerFS + 1] = fs
+    return fs
+end
+
+local function StaticHeaderR(text, rightOffset, w)
+    local fs = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    fs:SetPoint("TOPRIGHT", frame, "TOPRIGHT", rightOffset, -106)
+    fs:SetWidth(w)
+    fs:SetJustifyH("RIGHT")
+    fs:SetText(text)
+    headerFS[#headerFS + 1] = fs
+    return fs
+end
+
+local sortHeaders = {}
+local function SortHeader(x, w)
+    local h = {}
+    h.btn = CreateFrame("Button", nil, frame)
+    h.btn:SetPoint("TOPRIGHT", frame, "TOPRIGHT", x, -104)
+    h.btn:SetSize(w, 16)
+    h.fs = h.btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    h.fs:SetPoint("RIGHT", 0, 0)
+    headerFS[#headerFS + 1] = h.fs
+    h.arrow = h.btn:CreateTexture(nil, "OVERLAY")
+    h.arrow:SetSize(9, 8)
+    h.arrow:SetPoint("RIGHT", h.fs, "LEFT", -3, 0)
+    h.arrow:SetTexture("Interface\\Buttons\\UI-SortArrow")
+    h.arrow:Hide()
+    h.btn:SetScript("OnClick", function()
+        if sortKey == h.key then
+            sortAsc = not sortAsc
+        else
+            sortKey = h.key
+            sortAsc = false
+        end
+        Refresh()
+    end)
+    h.btn:SetScript("OnEnter", function() local c = Theme().text; h.fs:SetTextColor(c[1], c[2], c[3]) end)
+    h.btn:SetScript("OnLeave", function() local c = Theme().header; h.fs:SetTextColor(c[1], c[2], c[3]) end)
+    sortHeaders[#sortHeaders + 1] = h
+end
+local hdrRank = StaticHeader("#", 24, 24, "LEFT")
+local hdrName = StaticHeader("Name", 70, 182, "LEFT")
+local hdrDuel = StaticHeader("Duel", 28, 280, "LEFT")
+local hdrWhen = StaticHeaderR("When", -108, 62)
+local hdrRecord = StaticHeaderR("Record", -50, 52)
+local hdrBet = StaticHeaderR("Bet", -180, 70)
+SortHeader(-130, 70)  -- 1: weekly column
+SortHeader(-50, 80)  -- 2: total column
+SortHeader(-50, 160) -- 3: wide column (gold board)
+
+local scroll = CreateFrame("ScrollFrame", "GayFurriesLeaderboardScroll", frame, "UIPanelScrollFrameTemplate")
+scroll:SetPoint("TOPLEFT", 20, -124)
+scroll:SetPoint("BOTTOMRIGHT", -34, 46)
+local content = CreateFrame("Frame", nil, scroll)
+content:SetSize(420, 1)
+scroll:SetScrollChild(content)
+
+-- theme dropdown, bottom left
+local ApplyTheme -- forward declaration
+local THEME_ORDER = { "gay", "straight", "cat", "blue", "berrii" }
+local THEME_NAMES = { gay = "Gay Theme", straight = "Straight Theme", cat = "Cat Theme", blue = "Dog Theme", berrii = "Berrii Theme" }
+
+local themeBtn = CreateFrame("Button", nil, frame)
+themeBtn:SetSize(150, 22)
+themeBtn:SetPoint("BOTTOMLEFT", 20, 14)
+themeBtn.bg = themeBtn:CreateTexture(nil, "BACKGROUND")
+themeBtn.bg:SetAllPoints()
+themeBtn.bg:SetColorTexture(1, 1, 1, 1)
+themeBtn.fs = themeBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+themeBtn.fs:SetPoint("LEFT", 8, 0)
+themeBtn.arrow = themeBtn:CreateTexture(nil, "OVERLAY")
+themeBtn.arrow:SetSize(9, 8)
+themeBtn.arrow:SetPoint("RIGHT", -8, 0)
+themeBtn.arrow:SetTexture("Interface\\Buttons\\UI-SortArrow")
+themeBtn.arrow:SetTexCoord(0, 0.5625, 1, 0) -- points up: the list opens upward
+
+local themeMenu = CreateFrame("Frame", nil, frame)
+themeMenu:SetSize(150, #THEME_ORDER * 22 + 2)
+themeMenu:SetPoint("BOTTOMLEFT", themeBtn, "TOPLEFT", 0, 2)
+themeMenu:SetFrameLevel(frame:GetFrameLevel() + 30)
+themeMenu.bg = themeMenu:CreateTexture(nil, "BACKGROUND")
+themeMenu.bg:SetAllPoints()
+themeMenu.bg:SetColorTexture(0, 0, 0, 1)
+themeMenu.items = {}
+for i, id in ipairs(THEME_ORDER) do
+    local it = CreateFrame("Button", nil, themeMenu)
+    it:SetSize(148, 22)
+    it:SetPoint("TOPLEFT", 1, -(i - 1) * 22 - 1)
+    it.bg = it:CreateTexture(nil, "BACKGROUND")
+    it.bg:SetAllPoints()
+    it.bg:SetColorTexture(1, 1, 1, 1)
+    it.fs = it:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    it.fs:SetPoint("LEFT", 8, 0)
+    it.fs:SetText(THEME_NAMES[id])
+    it:SetScript("OnClick", function()
+        if not db then return end
+        db.theme = id
+        themeMenu:Hide()
+        ApplyTheme()
+    end)
+    themeMenu.items[id] = it
+end
+themeMenu:Hide()
+
+themeBtn:SetScript("OnClick", function()
+    if themeMenu:IsShown() then themeMenu:Hide() else themeMenu:Show() end
+end)
+frame:HookScript("OnHide", function() themeMenu:Hide() end)
+
+local function UpdateThemeUI()
+    local th = Theme()
+    local cur = (db and db.theme) or "gay"
+    themeBtn.bg:SetColorTexture(th.menuBg[1], th.menuBg[2], th.menuBg[3], th.menuBg[4])
+    themeBtn.fs:SetText("Theme: " .. THEME_NAMES[cur]:gsub(" Theme", ""))
+    themeBtn.fs:SetTextColor(th.tabTextOn[1], th.tabTextOn[2], th.tabTextOn[3])
+    if cur == "gay" or cur == "blue" or cur == "berrii" then -- these need their own text color on the button
+        themeBtn.fs:SetTextColor(th.text[1], th.text[2], th.text[3])
+    end
+    themeMenu.bg:SetColorTexture(th.border[1], th.border[2], th.border[3], 1)
+    for id, it in pairs(themeMenu.items) do
+        local on = (id == cur)
+        local bg = on and th.tabOn or th.menuBg
+        local tx = on and th.tabTextOn or th.tabTextOff
+        it.bg:SetColorTexture(bg[1], bg[2], bg[3], 1)
+        it.fs:SetTextColor(tx[1], tx[2], tx[3])
+    end
+end
+
+-- "Hidden Mode" button, bottom right (gold board only)
+local hideBtn = CreateFrame("Button", nil, frame)
+hideBtn:SetSize(140, 22)
+hideBtn:SetPoint("BOTTOMRIGHT", -32, 14)
+hideBtn.bg = hideBtn:CreateTexture(nil, "BACKGROUND")
+hideBtn.bg:SetAllPoints()
+hideBtn.bg:SetColorTexture(1, 1, 1, 1)
+hideBtn.fs = hideBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+hideBtn.fs:SetPoint("CENTER")
+
+local function UpdateHideButton()
+    local th = Theme()
+    local hidden = db and db.shareGold == false
+    local bg = hidden and th.tabOn or th.tabOff
+    local tx = hidden and th.tabTextOn or th.tabTextOff
+    hideBtn.bg:SetColorTexture(bg[1], bg[2], bg[3], bg[4])
+    hideBtn.fs:SetTextColor(tx[1], tx[2], tx[3])
+    hideBtn.fs:SetText(hidden and "Hidden Mode: ON" or "Hidden Mode: OFF")
+end
+
+local emptyFS = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+emptyFS:SetPoint("CENTER", scroll, "CENTER", 0, 20)
+emptyFS:SetWidth(300)
+emptyFS:SetText("No guild duels yet.\nChallenge a guildmate!")
+emptyFS:Hide()
+
+local rowWidth = 420
+local function LayoutRow(r)
+    r:SetWidth(rowWidth)
+    local function put(f, x, w)
+        f:ClearAllPoints()
+        f:SetPoint("LEFT", r, "LEFT", x, 0)
+        if w then f:SetWidth(w) end
+    end
+    put(r.name, 52, rowWidth - 230)
+    put(r.weekly, rowWidth - 170)
+    put(r.total, rowWidth - 90)
+    put(r.gold, rowWidth - 170)
+    put(r.duel, 8, rowWidth - 140)
+    put(r.when, rowWidth - 130)
+    put(r.rec, rowWidth - 62, 52)
+    put(r.bet, rowWidth - 210, 70)
+end
+
+local rows = {}
+local function GetRow(i)
+    local r = rows[i]
+    if r then return r end
+    r = CreateFrame("Frame", nil, content)
+    r:SetSize(420, ROW_H)
+    r:SetPoint("TOPLEFT", 0, -(i - 1) * ROW_H)
+    r.bg = r:CreateTexture(nil, "BACKGROUND")
+    r.bg:SetAllPoints()
+    r.bar = r:CreateTexture(nil, "ARTWORK")
+    r.bar:SetSize(3, ROW_H - 2)
+    r.bar:SetPoint("LEFT", 0, 0)
+    r.icon = r:CreateTexture(nil, "ARTWORK")
+    r.icon:SetSize(14, 14)
+    r.icon:SetPoint("LEFT", 32, 0)
+    r.icon:SetTexture("Interface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES")
+    local function fs(x, w, j)
+        local f = r:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        f:SetPoint("LEFT", x, 0)
+        f:SetWidth(w)
+        f:SetJustifyH(j)
+        return f
+    end
+    r.rank = fs(8, 24, "LEFT")
+    r.name = fs(52, 190, "LEFT")
+    if r.name.SetWordWrap then r.name:SetWordWrap(false) end
+    r.weekly = fs(250, 70, "RIGHT")
+    r.total = fs(330, 80, "RIGHT")
+    r.gold = fs(250, 160, "RIGHT")
+    -- duel log fields (outlined so class colors stay readable on any background)
+    r.duel = fs(8, 280, "LEFT")
+    r.when = fs(290, 62, "RIGHT")
+    r.rec = fs(358, 52, "RIGHT")
+    r.bet = fs(220, 70, "RIGHT")
+    r.bet:Hide()
+    if r.bet.SetWordWrap then r.bet:SetWordWrap(false) end
+    if r.rec.SetWordWrap then r.rec:SetWordWrap(false) end
+    if r.duel.SetWordWrap then r.duel:SetWordWrap(false) end
+    local path, size = r.duel:GetFont()
+    r.duel:SetFont(path, size, "OUTLINE")
+    r.duel:Hide()
+    r.when:Hide()
+    r.rec:Hide()
+    LayoutRow(r)
+    rows[i] = r
+    return r
+end
+
+local function ClassOf(name, fallback)
+    local m = db.members[name]
+    if m and m.class and m.class ~= "" then return m.class end
+    return fallback or ""
+end
+
+local function RefreshDuels(th)
+    local now = GetServerTime()
+    local all = db.duels or {}
+    local wins = {}
+    for _, d in ipairs(all) do
+        local k = d.w .. ">" .. d.l
+        wins[k] = (wins[k] or 0) + 1
+    end
+    local duels = {}
+    for _, d in ipairs(all) do duels[#duels + 1] = d end
+    table.sort(duels, function(a, b) return a.t > b.t end)
+
+    local n = math.min(#duels, 100)
+    local textHex = Hex(th.text)
+    for i = 1, n do
+        local d = duels[i]
+        local r = GetRow(i)
+        LayoutRow(r)
+        r.bet:Hide()
+        local c = th.stripes[(i - 1) % 6 + 1]
+        r.bar:SetColorTexture(c[1], c[2], c[3], 1)
+        r.bg:SetColorTexture(1, 1, 1, (i % 2 == 0) and th.alt or 0)
+        r.rank:Hide(); r.icon:Hide(); r.name:Hide()
+        r.weekly:Hide(); r.total:Hide(); r.gold:Hide()
+        r.duel:Show(); r.when:Show(); r.rec:Show()
+        r.duel:SetText(ClassColored(d.w, ClassOf(d.w, d.wc)) .. " |cff" .. textHex .. "defeated|r "
+            .. ClassColored(d.l, ClassOf(d.l, d.lc)))
+        r.when:SetText(TimeAgo(math.max(0, now - d.t)))
+        -- head-to-head record from the winner's point of view
+        r.rec:SetText((wins[d.w .. ">" .. d.l] or 0) .. "-" .. (wins[d.l .. ">" .. d.w] or 0))
+        r.when:SetTextColor(th.text[1], th.text[2], th.text[3])
+        r.rec:SetTextColor(th.text[1], th.text[2], th.text[3])
+        r:Show()
+    end
+    for i = n + 1, #rows do rows[i]:Hide() end
+    content:SetHeight(math.max(1, n * ROW_H))
+    if n == 0 then
+        emptyFS:SetText("No guild duels yet.\nChallenge a guildmate!")
+        emptyFS:SetTextColor(th.header[1], th.header[2], th.header[3])
+        emptyFS:Show()
+    else
+        emptyFS:Hide()
+    end
+    for _, h in ipairs(sortHeaders) do h.arrow:Hide() end
+end
+
+local function RefreshRolls(th)
+    local now = GetServerTime()
+    local all = db.rolls or {}
+    local h2h = {} -- total gold won by x against y
+    for _, d in ipairs(all) do
+        local k = d.w .. ">" .. d.l
+        h2h[k] = (h2h[k] or 0) + (d.bet or 0)
+    end
+    local list = {}
+    for _, d in ipairs(all) do list[#list + 1] = d end
+    table.sort(list, function(a, b) return a.t > b.t end)
+
+    local n = math.min(#list, 150)
+    local textHex = Hex(th.text)
+    for i = 1, n do
+        local d = list[i]
+        local r = GetRow(i)
+        LayoutRow(r)
+        r.duel:SetWidth(math.max(60, rowWidth - 222))
+        r.rec:ClearAllPoints(); r.rec:SetPoint("LEFT", r, "LEFT", rowWidth - 66, 0); r.rec:SetWidth(56)
+        local c = th.stripes[(i - 1) % 6 + 1]
+        r.bar:SetColorTexture(c[1], c[2], c[3], 1)
+        r.bg:SetColorTexture(1, 1, 1, (i % 2 == 0) and th.alt or 0)
+        r.rank:Hide(); r.icon:Hide(); r.name:Hide()
+        r.weekly:Hide(); r.total:Hide(); r.gold:Hide()
+        r.duel:Show(); r.when:Show(); r.rec:Show(); r.bet:Show()
+        r.duel:SetText(ClassColored(d.w, ClassOf(d.w, d.wc)) .. " |cff" .. textHex .. "beat|r "
+            .. ClassColored(d.l, ClassOf(d.l, d.lc)))
+        r.bet:SetText(d.bet and ShortMoney(d.bet) or "?")
+        r.when:SetText(TimeAgo(math.max(0, now - d.t)))
+        -- how much the winner is up (or down) overall against this opponent
+        r.rec:SetText(NetText((h2h[d.w .. ">" .. d.l] or 0) - (h2h[d.l .. ">" .. d.w] or 0)))
+        r.bet:SetTextColor(th.text[1], th.text[2], th.text[3])
+        r.when:SetTextColor(th.text[1], th.text[2], th.text[3])
+        r.rec:SetTextColor(th.text[1], th.text[2], th.text[3])
+        r:Show()
+    end
+    for i = n + 1, #rows do rows[i]:Hide() end
+    content:SetHeight(math.max(1, n * ROW_H))
+    if n == 0 then
+        emptyFS:SetText("No guild deathrolls yet.\nDeathroll a guildmate, then trade\nthe winner the bet!")
+        emptyFS:SetTextColor(th.header[1], th.header[2], th.header[3])
+        emptyFS:Show()
+    else
+        emptyFS:Hide()
+    end
+    for _, h in ipairs(sortHeaders) do h.arrow:Hide() end
+end
+
+-- per-player deathroll totals for the rankings tab
+local function RollStats()
+    local stats = {}
+    local function get(name, class)
+        local e = stats[name]
+        if not e then e = { name = name, class = "", wins = 0, losses = 0, net = 0 }; stats[name] = e end
+        if class and class ~= "" then e.class = class end
+        return e
+    end
+    for _, d in ipairs(db.rolls or {}) do
+        local w, l = get(d.w, d.wc), get(d.l, d.lc)
+        w.wins = w.wins + 1; w.net = w.net + (d.bet or 0)
+        l.losses = l.losses + 1; l.net = l.net - (d.bet or 0)
+    end
+    local list = {}
+    for _, e in pairs(stats) do
+        local m = db.members[e.name]
+        if m and m.class and m.class ~= "" then e.class = m.class end
+        list[#list + 1] = e
+    end
+    return list
+end
+
+function Refresh()
+    if not frame:IsShown() or not db then return end
+    local th = Theme()
+    local straight = (db.theme == "straight")
+    if board == "duels" then
+        RefreshDuels(th)
+        return
+    elseif board == "rolls" then
+        RefreshRolls(th)
+        return
+    end
+    emptyFS:Hide()
+    local wk = CurrentWeekId()
+    local list = {}
+    if board == "rollrank" then
+        list = RollStats()
+        if #list == 0 then
+            emptyFS:SetText("No guild deathrolls yet.\nDeathroll a guildmate, then trade\nthe winner the bet!")
+            emptyFS:SetTextColor(th.header[1], th.header[2], th.header[3])
+            emptyFS:Show()
+        end
+    else
+    for name, m in pairs(db.members) do
+        local cur = (m.week == wk) -- a stale week counts as 0
+        list[#list + 1] = {
+            name = name, class = m.class,
+            total = m.total or 0, weekly = cur and (m.weekly or 0) or 0,
+            dTotal = m.dTotal or 0, dWeekly = cur and (m.dWeekly or 0) or 0,
+            gold = m.gold or -1,
+        }
+    end
+    end
+    table.sort(list, function(a, b)
+        if a[sortKey] ~= b[sortKey] then
+            if sortAsc then return a[sortKey] < b[sortKey] end
+            return a[sortKey] > b[sortKey]
+        end
+        return a.name < b.name
+    end)
+
+    local cfg = BOARDS[board]
+    for i, e in ipairs(list) do
+        local r = GetRow(i)
+        local c = th.stripes[(i - 1) % 6 + 1]
+        r.bar:SetColorTexture(c[1], c[2], c[3], 1)
+        r.bg:SetColorTexture(1, 1, 1, (i % 2 == 0) and th.alt or 0)
+        LayoutRow(r)
+        r.duel:Hide(); r.when:Hide(); r.rec:Hide(); r.bet:Hide()
+        r.rank:Show(); r.name:Show()
+        r.rank:SetText(i)
+        local tc = CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[e.class]
+        if tc then
+            r.icon:SetTexCoord(tc[1], tc[2], tc[3], tc[4])
+            r.icon:Show()
+        else
+            r.icon:Hide() -- class unknown (e.g. older saved data)
+        end
+        if straight then
+            r.name:SetText(e.name)
+        else
+            r.name:SetText("|cff" .. th.prefix .. (CUTE[i] or CUTE_FALLBACK) .. "|r " .. e.name)
+            if r.name:GetStringWidth() > (r.name:GetWidth() - 2) then r.name:SetText(e.name) end -- long names: drop the cute prefix
+        end
+
+        if board == "gold" then
+            r.weekly:Hide()
+            r.total:Hide()
+            r.gold:Show()
+            r.gold:SetText(FormatMoney(e.gold))
+        elseif board == "rollrank" then
+            r.gold:Hide()
+            r.weekly:Show()
+            r.total:Show()
+            r.weekly:SetText(e.wins .. "-" .. e.losses)
+            r.total:SetText(NetText(e.net))
+        else
+            r.gold:Hide()
+            r.weekly:Show()
+            r.total:Show()
+            r.weekly:SetText(e[cfg.cols[1].key])
+            r.total:SetText(e[cfg.cols[2].key])
+        end
+        for _, f in ipairs({ r.rank, r.name, r.weekly, r.total, r.gold }) do
+            f:SetTextColor(th.text[1], th.text[2], th.text[3])
+        end
+        r:Show()
+    end
+    for i = #list + 1, #rows do rows[i]:Hide() end
+    content:SetHeight(math.max(1, #list * ROW_H))
+
+    for _, h in ipairs(sortHeaders) do
+        if h.btn:IsShown() and h.key == sortKey then
+            h.arrow:Show()
+            if sortAsc then
+                h.arrow:SetTexCoord(0, 0.5625, 1, 0) -- pointing up: lowest first
+            else
+                h.arrow:SetTexCoord(0, 0.5625, 0, 1) -- pointing down: highest first
+            end
+        else
+            h.arrow:Hide()
+        end
+    end
+end
+
+-- set up the column headers and subtitle for the current board
+local function ConfigureBoard()
+    local cfg = BOARDS[board]
+    local isRolls = (board == "rolls")
+    local isLog = (board == "duels") or isRolls
+    for _, h in ipairs(sortHeaders) do h.btn:Hide() end
+    if isLog then
+        hdrRank:Hide(); hdrName:Hide()
+        hdrDuel:SetText(isRolls and "Deathroll" or "Duel")
+        hdrRecord:SetText(isRolls and "Net vs." or "Record")
+        hdrRecord:SetWidth(isRolls and 70 or 52)
+        hdrDuel:Show(); hdrWhen:Show(); hdrRecord:Show()
+        if isRolls then hdrBet:Show() else hdrBet:Hide() end
+    else
+        hdrRank:Show(); hdrName:Show()
+        hdrDuel:Hide(); hdrWhen:Hide(); hdrRecord:Hide(); hdrBet:Hide()
+        if board == "gold" then
+            local h = sortHeaders[3]
+            h.key = "gold"
+            h.fs:SetText("Total Wealth")
+            h.btn:Show()
+        else
+            for i = 1, 2 do
+                local h = sortHeaders[i]
+                h.key = cfg.cols[i].key
+                h.fs:SetText(cfg.cols[i].label)
+                h.btn:Show()
+            end
+        end
+    end
+    subtitle:SetText(cfg.subtitle)
+    if board == "gold" then hideBtn:Show() else hideBtn:Hide() end
+    UpdateHideButton()
+end
+
+local function UpdateTabs()
+    local th = Theme()
+    for id, b in pairs(tabs) do
+        local on = (id == board)
+        local bg = on and th.tabOn or th.tabOff
+        local tx = on and th.tabTextOn or th.tabTextOff
+        b.bg:SetColorTexture(bg[1], bg[2], bg[3], bg[4])
+        b.fs:SetTextColor(tx[1], tx[2], tx[3])
+    end
+end
+
+function ApplyTheme()
+    local th = Theme()
+    local mode = (db and db.theme) or "gay"
+    local straight = (mode == "straight")
+    local cat = (mode == "cat")
+
+    frame:SetBackdrop(straight and BD_STRAIGHT or ((mode == "berrii") and BD_BERRII or BD_GAY))
+    frame:SetBackdropColor(th.bg[1], th.bg[2], th.bg[3], th.bg[4])
+    frame:SetBackdropBorderColor(th.border[1], th.border[2], th.border[3], th.border[4])
+    for i, t in ipairs(stripeTex) do
+        local c = th.stripes[i]
+        t:SetColorTexture(c[1], c[2], c[3], 1)
+        if straight then t:Hide() else t:Show() end
+    end
+
+    if straight or mode == "berrii" then
+        unicorn:Hide()
+    else
+        unicorn:SetTexture(THEME_ART[mode] or UNICORN_ART)
+        unicorn:Show()
+    end
+    ShowBerrii(mode == "berrii")
+
+    title:ClearAllPoints()
+    subtitle:ClearAllPoints()
+    close:ClearAllPoints()
+    title:SetShadowColor(th.shadow[1], th.shadow[2], th.shadow[3], th.shadow[4])
+    title:SetShadowOffset(1, -1)
+    if straight then
+        plaque:Show()
+        title:SetFontObject(GameFontNormal)
+        title:SetPoint("TOP", frame, "TOP", 0, -2)
+        title:SetText("Straight Furries of Azeroth")
+        title:SetTextColor(0.95, 0.95, 0.95)
+        subtitle:SetPoint("TOP", frame, "TOP", 0, -50)
+        close:SetPoint("TOPRIGHT", -6, -6)
+    else
+        plaque:Hide()
+        title:SetFontObject(GameFontNormalLarge)
+        title:SetPoint("TOP", 0, -34)
+        title:SetText(RainbowText("Gay Furries of Azeroth", THEME_TITLE_HEX[mode]))
+        subtitle:SetPoint("TOP", title, "BOTTOM", 0, -4)
+        close:SetPoint("TOPRIGHT", -4, -24)
+    end
+    subtitle:SetTextColor(th.sub[1], th.sub[2], th.sub[3])
+    for _, fs in ipairs(headerFS) do
+        fs:SetTextColor(th.header[1], th.header[2], th.header[3])
+    end
+
+    UpdateThemeUI()
+    local gt = grip:GetNormalTexture()
+    if gt then gt:SetVertexColor(th.header[1], th.header[2], th.header[3]) end
+
+    UpdateTabs()
+    UpdateHideButton()
+    Refresh()
+end
+
+function SetBoard(id)
+    board = id
+    sortKey = BOARDS[id].defaultSort
+    sortAsc = false
+    ConfigureBoard()
+    UpdateTabs()
+    Refresh()
+end
+
+hideBtn:SetScript("OnClick", function()
+    if not db then return end
+    db.shareGold = (db.shareGold == false) -- nil/true -> hidden, false -> shared
+    UpdateHideButton()
+    Broadcast()
+end)
+hideBtn:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:AddLine("Hidden Mode")
+    GameTooltip:AddLine("When ON, guildmates see \"Hidden\" instead of your gold.", 1, 1, 1, true)
+    GameTooltip:Show()
+end)
+hideBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+frame:SetScript("OnSizeChanged", function(_, w)
+    rowWidth = w - 60
+    content:SetWidth(rowWidth)
+    hdrDuel:SetWidth(math.max(100, w - 200))
+    for _, r in ipairs(rows) do LayoutRow(r) end
+    if db and db.theme == "berrii" then LayoutBerrii() end
+    Refresh()
+end)
+
+frame:SetScript("OnShow", function()
+    if ready and IsInGuild() then SendAddonMessage(PREFIX, "REQ", "GUILD") end
+    Refresh()
+end)
+
+ConfigureBoard()
+
+local function ToggleBoard()
+    if frame:IsShown() then frame:Hide() else frame:Show() end
+end
+
+---------------------------------------------------------------------
+-- Minimap button (drag it around the minimap edge)
+---------------------------------------------------------------------
+local mini = CreateFrame("Button", "GayFurriesLeaderboardMinimapButton", Minimap)
+mini:SetSize(31, 31)
+mini:SetFrameStrata("MEDIUM")
+mini:SetFrameLevel(8)
+mini:RegisterForClicks("LeftButtonUp")
+mini:RegisterForDrag("LeftButton")
+mini:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+
+local miniIcon = mini:CreateTexture(nil, "BACKGROUND")
+miniIcon:SetSize(22, 22)
+miniIcon:SetPoint("CENTER", 0, 1)
+miniIcon:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+
+local miniText = mini:CreateFontString(nil, "OVERLAY")
+miniText:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
+miniText:SetPoint("CENTER", 0, 1)
+miniText:SetText("|cffFFADADG|r|cffFDFFB6A|r|cff9BF6FFY|r")
+
+local miniBorder = mini:CreateTexture(nil, "OVERLAY")
+miniBorder:SetSize(53, 53)
+miniBorder:SetPoint("TOPLEFT")
+miniBorder:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+
+local function PlaceMini()
+    local a = math.rad((db and db.miniAngle) or 200)
+    local r = Minimap:GetWidth() / 2 + 5
+    mini:ClearAllPoints()
+    mini:SetPoint("CENTER", Minimap, "CENTER", math.cos(a) * r, math.sin(a) * r)
+end
+
+mini:SetScript("OnClick", ToggleBoard)
+mini:SetScript("OnDragStart", function(self)
+    self:SetScript("OnUpdate", function()
+        local mx, my = Minimap:GetCenter()
+        local cx, cy = GetCursorPosition()
+        local s = Minimap:GetEffectiveScale()
+        db.miniAngle = math.deg(math.atan2(cy / s - my, cx / s - mx))
+        PlaceMini()
+    end)
+end)
+mini:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
+mini:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+    GameTooltip:AddLine(RainbowText("Gay Furries of Azeroth", true))
+    GameTooltip:AddLine("PvP, Death and Gold Leaderboards", 1, 0.75, 0.9)
+    GameTooltip:AddLine("Click to open or close", 1, 1, 1)
+    GameTooltip:AddLine("Drag to move this icon", 0.7, 0.7, 0.7)
+    GameTooltip:Show()
+end)
+mini:SetScript("OnLeave", function() GameTooltip:Hide() end)
+PlaceMini()
+
+---------------------------------------------------------------------
+-- Honorable-kill chat line (fallback kill counter; the combat log is off limits to addons here)
+---------------------------------------------------------------------
+local honorPattern
+local function IsHonorKillMessage(msg)
+    if type(msg) ~= "string" then return false end
+    if honorPattern == nil then
+        honorPattern = false
+        if type(COMBATLOG_HONORGAIN) == "string" then
+            local p = COMBATLOG_HONORGAIN:gsub("%%%d*%$?[sd]", "\1")
+            p = p:gsub("([%%%^%$%(%)%.%[%]%*%+%-%?])", "%%%1")
+            p = p:gsub("\1", ".+")
+            honorPattern = "^" .. p .. "$"
+        end
+    end
+    if honorPattern and msg:find(honorPattern) then return true end
+    return msg:find("honorable kill", 1, true) ~= nil
+end
+
+---------------------------------------------------------------------
+-- Events
+---------------------------------------------------------------------
+local ev = CreateFrame("Frame")
+ev:RegisterEvent("ADDON_LOADED")
+ev:RegisterEvent("PLAYER_ENTERING_WORLD")
+ev:RegisterEvent("CHAT_MSG_ADDON")
+ev:RegisterEvent("PLAYER_DEAD")
+ev:RegisterEvent("PLAYER_MONEY")
+ev:RegisterEvent("CHAT_MSG_SYSTEM")
+ev:RegisterEvent("GUILD_ROSTER_UPDATE")
+-- these may not exist on every client; don't error if they don't
+pcall(ev.RegisterEvent, ev, "PLAYER_PVP_KILLS_CHANGED")
+pcall(ev.RegisterEvent, ev, "CHAT_MSG_COMBAT_HONOR_GAIN")
+pcall(ev.RegisterEvent, ev, "TRADE_SHOW")
+pcall(ev.RegisterEvent, ev, "TRADE_ACCEPT_UPDATE")
+pcall(ev.RegisterEvent, ev, "TRADE_CLOSED")
+
+ev:SetScript("OnEvent", function(_, event, ...)
+    if event == "ADDON_LOADED" then
+        if ... ~= "GayFurriesLeaderboard" then return end
+        GayFurriesLeaderboardDB = GayFurriesLeaderboardDB or {}
+        db = GayFurriesLeaderboardDB
+        db.members = db.members or {}
+        db.source = db.source or "api"
+        db.deaths = db.deaths or 0
+        if not db.theme then -- migrate from the old toggles
+            db.theme = db.straight and "straight" or (db.cat and "cat" or "gay")
+        end
+        if not THEMES[db.theme] or db.theme == "kyy" then db.theme = "gay" end -- the removed Kyy theme
+        if RegisterPrefix then RegisterPrefix(PREFIX) end
+        if db.width and db.height then frame:SetSize(db.width, db.height) end
+        PlaceMini()
+        ApplyTheme()
+
+    elseif event == "PLAYER_ENTERING_WORLD" then
+        -- wait a moment so honor stats and money are loaded before the first snapshot
+        C_Timer.After(5, function()
+            if ready then return end
+            ready = true
+            Broadcast()
+            if IsInGuild() then SendAddonMessage(PREFIX, "REQ", "GUILD") end
+            RequestRoster()
+            C_Timer.After(3, RebuildGuildSet)
+            C_Timer.NewTicker(300, function() RequestRoster(); Broadcast() end)
+            C_Timer.NewTicker(30, function() -- keep the "x minutes ago" column fresh
+                if board == "duels" or board == "rolls" then Refresh() end
+            end)
+        end)
+
+    elseif event == "CHAT_MSG_ADDON" then
+        OnAddonMessage(...)
+
+    elseif event == "CHAT_MSG_SYSTEM" then
+        OnSystemMessage(...)
+        OnRollMessage((...))
+        OnTradeSystemMessage((...))
+
+    elseif event == "TRADE_SHOW" or event == "TRADE_ACCEPT_UPDATE" or event == "TRADE_CLOSED" then
+        OnTradeEvent(event, ...)
+
+    elseif event == "GUILD_ROSTER_UPDATE" then
+        local now = GetTime()
+        if now - lastRoster > 5 then
+            lastRoster = now
+            RebuildGuildSet()
+        end
+
+    elseif event == "PLAYER_DEAD" then
+        if not db then return end
+        db.deaths = (db.deaths or 0) + 1
+        if ready then ScheduleBroadcast() end
+
+    elseif event == "CHAT_MSG_COMBAT_HONOR_GAIN" then
+        -- the "X dies, honorable kill" chat line: used for the fallback kill counter
+        if db and IsHonorKillMessage((...)) then
+            db.logKills = (db.logKills or 0) + 1
+        end
+        if ready then ScheduleBroadcast() end
+
+    else -- PLAYER_MONEY / PLAYER_PVP_KILLS_CHANGED / CHAT_MSG_COMBAT_HONOR_GAIN
+        if ready then ScheduleBroadcast() end
+    end
+end)
+
+---------------------------------------------------------------------
+-- Slash commands
+---------------------------------------------------------------------
+SLASH_GUILDPVPBOARD1 = "/gpvp"
+SLASH_GUILDPVPBOARD2 = "/pvplb"
+SLASH_GUILDPVPBOARD3 = "/gayleaderboard"
+SLASH_GUILDPVPBOARD4 = "/gayfurries"
+SlashCmdList["GUILDPVPBOARD"] = function(msg)
+    msg = (msg or ""):lower()
+    if msg == "reset" then
+        db.members = {}
+        db.weekBase = nil
+        db.dWeekBase = nil
+        print("|cff33ff99GayFurriesLeaderboard:|r data cleared.")
+        Broadcast()
+    elseif msg == "debug" then
+        local api = ApiLifetimeKills()
+        print("|cff33ff99GayFurriesLeaderboard debug|r")
+        print("  my full name:", MyName(), "| UnitName:", tostring((UnitName("player"))), "second value:", tostring((select(2, UnitName("player")))))
+        print("  GetPVPLifetimeStats exists:", GetPVPLifetimeStats ~= nil, "value:", tostring(api))
+        print("  kills counted from honor messages:", db.logKills or 0)
+        print("  source in use:", db.source)
+        print("  deaths counted:", db.deaths or 0, "weekly base:", tostring(db.dWeekBase))
+        print("  sharing gold:", tostring(db.shareGold ~= false))
+        local gs = 0
+        for _ in pairs(guildSet) do gs = gs + 1 end
+        print("  duels saved:", #(db.duels or {}), "deathrolls saved:", #(db.rolls or {}), "guild roster names known:", gs)
+        print("  week id:", CurrentWeekId(), "kill week base:", tostring(db.weekBase))
+    elseif msg == "source api" or msg == "source log" then
+        db.source = msg:match("source (%a+)")
+        db.weekBase = nil -- re-baseline weekly
+        print("|cff33ff99GayFurriesLeaderboard:|r kill source set to", db.source)
+        Broadcast()
+    elseif msg == "clearduels" then
+        db.duels = {}
+        print("|cff33ff99GayFurriesLeaderboard:|r duel log cleared.")
+        Refresh()
+    elseif msg == "clearrolls" then
+        db.rolls = {}
+        print("|cff33ff99GayFurriesLeaderboard:|r deathroll history cleared.")
+        Refresh()
+    elseif msg == "gold off" or msg == "gold on" then
+        db.shareGold = (msg == "gold on")
+        print("|cff33ff99GayFurriesLeaderboard:|r gold sharing is now", db.shareGold and "ON" or "OFF (guildmates see Hidden)")
+        UpdateHideButton()
+        Broadcast()
+    else
+        ToggleBoard()
+    end
+end

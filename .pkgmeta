@@ -1,9 +1,11 @@
 package-as: GFoAGuildSync
 
-# The addons live in GFoAGuildSync/ and GFoAGuildSyncBotData/ in this repo; put both at the zip root.
+# The addons live in GFoAGuildSync/, GFoAGuildSyncBotData/ and GayFurriesLeaderboard/ (Sephya's) in this repo;
+# put all three at the zip root.
 move-folders:
   GFoAGuildSync/GFoAGuildSync: GFoAGuildSync
   GFoAGuildSync/GFoAGuildSyncBotData: GFoAGuildSyncBotData
+  GFoAGuildSync/GayFurriesLeaderboard: GayFurriesLeaderboard
 
 ignore:
   - README.md
