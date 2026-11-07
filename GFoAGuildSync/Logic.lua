@@ -1549,6 +1549,41 @@ function L.shortCountdown(secs)
   return nil
 end
 
+-- Minimap button offset from the minimap centre for an angle (degrees), minimap size and GetMinimapShape() value.
+-- Round quadrants sit on an ellipse just outside the edge; square quadrants (Leatrix Plus "Square minimap",
+-- SexyMap, ElvUI...) follow the square's edge instead of floating inside the corner. Quadrant flags per shape:
+-- { bottom-right, bottom-left, top-right, top-left }, true = round there. Unknown shapes count as round.
+L.MINIMAP_SHAPES = {
+  ["ROUND"] = { true, true, true, true },
+  ["SQUARE"] = { false, false, false, false },
+  ["CORNER-TOPLEFT"] = { false, false, false, true },
+  ["CORNER-TOPRIGHT"] = { false, false, true, false },
+  ["CORNER-BOTTOMLEFT"] = { false, true, false, false },
+  ["CORNER-BOTTOMRIGHT"] = { true, false, false, false },
+  ["SIDE-LEFT"] = { false, true, false, true },
+  ["SIDE-RIGHT"] = { true, false, true, false },
+  ["SIDE-TOP"] = { false, false, true, true },
+  ["SIDE-BOTTOM"] = { true, true, false, false },
+  ["TRICORNER-TOPLEFT"] = { false, true, true, true },
+  ["TRICORNER-TOPRIGHT"] = { true, false, true, true },
+  ["TRICORNER-BOTTOMLEFT"] = { true, true, false, true },
+  ["TRICORNER-BOTTOMRIGHT"] = { true, true, true, false },
+}
+
+function L.minimapButtonOffset(angleDeg, width, height, shape)
+  local a = math.rad(angleDeg or 315)
+  local cx, cy = math.cos(a), math.sin(a)
+  local q = 1
+  if cx < 0 then q = q + 1 end
+  if cy > 0 then q = q + 2 end
+  local rx, ry = (width or 140) / 2 + 5, (height or 140) / 2 + 5
+  local quads = L.MINIMAP_SHAPES[shape or "ROUND"] or L.MINIMAP_SHAPES.ROUND
+  if quads[q] then return cx * rx, cy * ry end
+  -- Square quadrant: push out along the diagonal, then clamp to the square's edge.
+  local dx, dy = math.sqrt(2 * rx * rx) - 10, math.sqrt(2 * ry * ry) - 10
+  return math.max(-rx, math.min(cx * dx, rx)), math.max(-ry, math.min(cy * dy, ry))
+end
+
 L.REMINDER_MARKS = { 30, 5 }
 
 -- Reminders due now: per event, the smallest mark (minutes) we're inside of, once. sent[key] = start remembers

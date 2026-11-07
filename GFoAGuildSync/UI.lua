@@ -126,13 +126,87 @@ end
 -- Minimap button
 -- ---------------------------------------------------------------------------
 
+-- Tooltip and clicks shared by our own button and the LibDBIcon one.
+local function fillMinimapTooltip(tt)
+  local pink = ns.ui.C.pink
+  tt:AddLine("|T" .. ns.ui.TEX.paw .. ":14|t GFoA Guild Sync", pink[1], pink[2], pink[3])
+  tt:AddLine(statusLines(), 1, 1, 1)
+  tt:AddLine("Left-click: menu. Right-click: guild window. Drag: move.", 0.65, 0.62, 0.70)
+  tt:AddLine("Alt+right-click an item: ask guild crafters.", 0.65, 0.62, 0.70)
+end
+
+local function minimapClick(self, button)
+  if button == "RightButton" then
+    ns.toggleGuildWindow()
+  else
+    ns.ui.popup(self, ns.menuItems())
+  end
+end
+
+local function addCountdown(b)
+  -- Next guild event countdown ("2h", "45m") under the icon, from the Discord data (Events.lua).
+  local countdown = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  countdown:SetPoint("TOP", b, "BOTTOM", 0, 4)
+  countdown:SetTextColor(ns.ui.C.pink[1], ns.ui.C.pink[2], ns.ui.C.pink[3])
+  b.countdown = countdown
+end
+
+-- LibDBIcon mode. When another addon has loaded LibDataBroker + LibDBIcon (Leatrix Plus, Questie, DBM...), we
+-- register through it so minimap managers treat us like any standard button: Leatrix Plus "Hide addon buttons",
+-- button bag, square minimap and SexyMap all work. Leatrix otherwise hides custom buttons for good and shows a copy
+-- with a generic icon. We don't ship the libraries; without them we keep our own button below.
+local LDB_NAME = "GFoAGuildSync"
+local ldbMode, ldbButton
+
+local function minimapLibs()
+  local stub = _G.LibStub
+  if type(stub) ~= "table" and type(stub) ~= "function" then return nil end
+  local ldb = stub("LibDataBroker-1.1", true)
+  local dbicon = stub("LibDBIcon-1.0", true)
+  if ldb and dbicon then return ldb, dbicon end
+end
+
+local function ldbSettings()
+  local db = ns.settings.ldbIcon
+  if type(db) ~= "table" then
+    -- LibDBIcon measures minimapPos the same way as our minimapAngle (degrees, 0 = right, counter-clockwise).
+    db = { minimapPos = ns.settings.minimapAngle or 315 }
+    ns.settings.ldbIcon = db
+  end
+  db.hide = ns.settings.minimapHidden and true or false
+  return db
+end
+
+local function createLdbIcon()
+  if ldbMode then return true end
+  local ldb, dbicon = minimapLibs()
+  if not ldb then return false end
+  local obj = ldb:GetDataObjectByName(LDB_NAME) or ldb:NewDataObject(LDB_NAME, {
+    type = "launcher",
+    label = "GFoA Guild Sync",
+    icon = ns.ui.TEX.minimap,
+    OnClick = minimapClick,
+    OnTooltipShow = fillMinimapTooltip,
+  })
+  if not obj then return false end
+  if not dbicon:IsRegistered(LDB_NAME) then dbicon:Register(LDB_NAME, obj, ldbSettings()) end
+  ldbMode = true
+  ldbButton = dbicon:GetMinimapButton(LDB_NAME)
+  if ldbButton and not ldbButton.countdown then addCountdown(ldbButton) end
+  ns.updateMinimapCountdown()
+  return true
+end
+
 local function placeMinimapButton()
   if not minimapButton or not Minimap then return end
   -- Default bottom-right (315): the lower-left of the ring is where other addons' buttons pile up.
-  local angle = math.rad(ns.settings.minimapAngle or 315)
-  local radius = ((Minimap.GetWidth and Minimap:GetWidth() or 140) / 2) + 5
+  -- GetMinimapShape is defined by minimap addons (Leatrix Plus returns "SQUARE" with its square minimap on).
+  local shape = type(GetMinimapShape) == "function" and GetMinimapShape() or "ROUND"
+  local w = Minimap.GetWidth and Minimap:GetWidth() or 140
+  local h = Minimap.GetHeight and Minimap:GetHeight() or w
+  local x, y = ns.logic.minimapButtonOffset(ns.settings.minimapAngle or 315, w, h, shape)
   minimapButton:ClearAllPoints()
-  minimapButton:SetPoint("CENTER", Minimap, "CENTER", math.cos(angle) * radius, math.sin(angle) * radius)
+  minimapButton:SetPoint("CENTER", Minimap, "CENTER", x, y)
 end
 
 local function createMinimapButton()
@@ -145,7 +219,8 @@ local function createMinimapButton()
   b:RegisterForDrag("LeftButton")
 
   -- Our own round paw-sticker icon (Media/minimap.tga, 64x64 with alpha): no stock border needed.
-  local icon = b:CreateTexture(nil, "ARTWORK")
+  -- Named "<button>Icon" so minimap bag addons that copy buttons pick up our paw, not a generic icon.
+  local icon = b:CreateTexture("$parentIcon", "ARTWORK")
   icon:SetTexture(ns.ui.TEX.minimap)
   icon:SetAllPoints()
   local glow = b:CreateTexture(nil, "HIGHLIGHT")
@@ -153,21 +228,11 @@ local function createMinimapButton()
   glow:SetAllPoints()
   glow:SetBlendMode("ADD")
   glow:SetAlpha(0.35)
-  -- Next guild event countdown ("2h", "45m") under the icon, from the Discord data (Events.lua).
-  local countdown = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  countdown:SetPoint("TOP", b, "BOTTOM", 0, 4)
-  countdown:SetTextColor(ns.ui.C.pink[1], ns.ui.C.pink[2], ns.ui.C.pink[3])
-  b.countdown = countdown
+  addCountdown(b)
   b:SetScript("OnMouseDown", function() icon:SetSize(29, 29); icon:ClearAllPoints(); icon:SetPoint("CENTER") end)
   b:SetScript("OnMouseUp", function() icon:ClearAllPoints(); icon:SetAllPoints() end)
 
-  b:SetScript("OnClick", function(self, button)
-    if button == "RightButton" then
-      ns.toggleGuildWindow()
-    else
-      ns.ui.popup(self, ns.menuItems())
-    end
-  end)
+  b:SetScript("OnClick", minimapClick)
   b:SetScript("OnDragStart", function(self)
     self:SetScript("OnUpdate", function()
       local mx, my = Minimap:GetCenter()
@@ -183,11 +248,7 @@ local function createMinimapButton()
   b:SetScript("OnEnter", function(self)
     if not GameTooltip then return end
     GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-    local pink = ns.ui.C.pink
-    GameTooltip:AddLine("|T" .. ns.ui.TEX.paw .. ":14|t GFoA Guild Sync", pink[1], pink[2], pink[3])
-    GameTooltip:AddLine(statusLines(), 1, 1, 1)
-    GameTooltip:AddLine("Left-click: menu. Right-click: guild window. Drag: move.", 0.65, 0.62, 0.70)
-    GameTooltip:AddLine("Alt+right-click an item: ask guild crafters.", 0.65, 0.62, 0.70)
+    fillMinimapTooltip(GameTooltip)
     GameTooltip:Show()
   end)
   b:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
@@ -197,9 +258,10 @@ local function createMinimapButton()
 end
 
 function ns.updateMinimapCountdown()
-  if not minimapButton or not minimapButton.countdown then return end
+  local b = ldbButton or minimapButton
+  if not b or not b.countdown then return end
   local text = ns.eventCountdownText and ns.eventCountdownText()
-  minimapButton.countdown:SetText(text or "")
+  b.countdown:SetText(text or "")
 end
 
 function ns.menuItems()
@@ -241,6 +303,12 @@ end
 function ns.toggleMinimap(show)
   if show == nil then show = ns.settings.minimapHidden and true or false end
   ns.settings.minimapHidden = not show
+  if ldbMode then
+    local _, dbicon = minimapLibs()
+    ldbSettings()
+    if show then dbicon:Show(LDB_NAME) else dbicon:Hide(LDB_NAME) end
+    return
+  end
   if show then
     createMinimapButton()
     if minimapButton then minimapButton:Show() end
@@ -253,8 +321,13 @@ ns.commands["show"] = function() ns.toggleFrame() end
 ns.commands["minimap"] = function(arg)
   if arg == "reset" then
     ns.settings.minimapAngle = nil
+    if type(ns.settings.ldbIcon) == "table" then ns.settings.ldbIcon.minimapPos = 315 end
     ns.toggleMinimap(true)
     placeMinimapButton()
+    if ldbMode then
+      local _, dbicon = minimapLibs()
+      dbicon:Refresh(LDB_NAME, ldbSettings())
+    end
     ns.print("minimap button moved back to its default spot (drag it to move it)")
     return
   end
@@ -263,7 +336,11 @@ ns.commands["minimap"] = function(arg)
 end
 
 ns.on("PLAYER_LOGIN", function()
-  if not ns.settings.minimapHidden then ns.safe("minimap", createMinimapButton) end
+  -- LibDBIcon when another addon loaded it (always registered, hidden or not, so /gf minimap can show it later),
+  -- else our own button.
+  local viaLib = false
+  ns.safe("minimap", function() viaLib = createLdbIcon() end)
+  if not viaLib and not ns.settings.minimapHidden then ns.safe("minimap", createMinimapButton) end
   if ns.settings.frameShown then ns.safe("frame", ns.toggleFrame, true) end
   ns.safe("leaderboardMinimap", ns.applyLeaderboardMinimap)
 end)
