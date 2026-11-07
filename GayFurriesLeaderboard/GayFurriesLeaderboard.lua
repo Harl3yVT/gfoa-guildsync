@@ -1,6 +1,6 @@
 ---------------------------------------------------------------------
 -- Gay Furries of Azeroth Leaderboard
--- Three guild leaderboards: PvP kills (battleground kills stopped counting in 0.2.1; earlier kills kept), deaths (weekly + lifetime), gold.
+-- Three guild leaderboards: PvP kills (battleground kills stopped counting in 0.2.1; earlier kills kept; all kills reset to 0 in 0.2.2), deaths (weekly + lifetime), gold.
 -- Target: WoW Forever client 1.60.1 (Classic-style API, Interface 16001)
 ---------------------------------------------------------------------
 local PREFIX = "GPVPLB"
@@ -77,11 +77,12 @@ end
 -- kills and can't be split, so the board keeps its own per-character counters that only grow outside a BG:
 --   c.worldKills  - increases of the API lifetime count seen outside a BG (c.apiSeen = last API value seen)
 --   c.logWorld    - honorable-kill chat lines seen outside a BG (fallback / "/gpvp source log")
--- c.logKills still counts every honor line. Kills made before the switch can't be told apart (the game only gives one
--- lifetime number), so everyone KEEPS them: the first sync seeds the world counters with the old totals and only kills
--- after that skip battlegrounds. c.killsV = 3 marks that seed. Version 2 (addon 1.8.3) wrongly restarted totals at 0;
--- version 3 puts the lifetime count back and keeps this week's count where it was.
-local KILLS_VERSION = 3
+-- c.logKills still counts every honor line. c.killsV marks the last one-time seed of these counters:
+--   2 (addon 1.8.3) restarted totals at 0 by mistake; 3 (1.8.4) put the old lifetime counts back.
+--   4 (leaderboard 0.2.2, addon 1.8.5): guild-wide kill reset. Every character's weekly and lifetime PvP kills start
+--     again at 0; only kills after the reset count. Cached guildmates' kills are zeroed too (see ResetCachedKills), and
+--     kill numbers from copies that haven't updated yet are shown as 0 until they do (see the "KV:" marker).
+local KILLS_VERSION = 4
 local wasBG = false -- were we in a battleground at the last kill sync (this session)
 
 local function InBattleground()
@@ -101,22 +102,13 @@ local function SyncKills(zoneChange)
     local nowBG = InBattleground()
     local inBG = wasBG or (not zoneChange and nowBG)
     local api = ApiLifetimeKills()
-    if c.killsV ~= KILLS_VERSION then -- one-time seed: keep every kill made before the switch
-        local logMode = db.source == "log" or not api
-        local old -- the number this week's base was measured against
-        if c.killsV == 2 then
-            old = logMode and (c.logWorld or 0) or (c.worldKills or 0)
-        else
-            old = logMode and (c.logKills or 0) or api
-        end
-        if api then
-            c.worldKills = math.max(c.worldKills or 0, api)
-            c.apiSeen = api
-        end
-        c.logWorld = math.max(c.logWorld or 0, c.logKills or 0)
+    if c.killsV ~= KILLS_VERSION then -- one-time kill reset: weekly and lifetime kills start again at 0
+        -- the lifetime count never drops, so the higher of the last value seen and this one is safe as the new
+        -- baseline (a 0 read just after login must not make the next real read count as fresh kills)
+        if api then c.apiSeen = math.max(c.apiSeen or 0, api) end
+        c.worldKills, c.logWorld = 0, 0
+        c.weekBase = 0 -- (weekId is left alone so a new week still re-baselines deaths as usual)
         c.killsV = KILLS_VERSION
-        local new = logMode and c.logWorld or c.worldKills
-        if c.weekBase then c.weekBase = c.weekBase + (new - old) end -- this week's count stays the same
         wasBG = nowBG
         return
     end
@@ -133,10 +125,7 @@ end
 
 local function CurrentKills()
     local c = Char() -- GFoA: per character
-    if c.killsV ~= KILLS_VERSION then -- not seeded yet (first seconds after login): the old lifetime count
-        if db.source == "log" then return c.logKills or 0 end
-        return ApiLifetimeKills() or c.logKills or 0
-    end
+    if c.killsV ~= KILLS_VERSION then return 0 end -- not reset yet (first seconds after login): already 0
     if db.source == "log" or not ApiLifetimeKills() then
         return c.logWorld or 0
     end
@@ -274,13 +263,27 @@ end
 -- Networking
 -- Message: kills:killsWeekly:weekId:CLASS:deaths:deathsWeekly:copper
 -- copper is -1 if the player chose not to share their gold.
+-- GFoA: each stats message is preceded by "KV:<KILLS_VERSION>". Older copies ignore it (it matches none of their
+-- patterns) and the stats line itself is unchanged, so they keep working. A sender we haven't seen a KV of at least
+-- KILLS_VERSION from still counts kills from before the reset, so their kills show as 0 until they update.
 ---------------------------------------------------------------------
 local lastSend, pending = 0, false
+
+-- Once per kill reset: zero every cached guildmate's PvP kills (deaths, gold and the rest stay).
+local function ResetCachedKills()
+    if db.killsResetV == KILLS_VERSION then return end
+    for _, m in pairs(db.members) do
+        if type(m) == "table" then m.total, m.weekly = 0, 0 end
+    end
+    db.killsFresh = {} -- senders known to have reset, by name
+    db.killsResetV = KILLS_VERSION
+end
 
 local function Broadcast()
     if not ready or not IsInGuild() then return end
     local m = UpdateOwn()
     local gold = (db.shareGold == false) and -1 or m.gold
+    SendAddonMessage(PREFIX, "KV:" .. KILLS_VERSION, "GUILD")
     SendAddonMessage(PREFIX, string.format("%d:%d:%d:%s:%d:%d:%.0f",
         m.total, m.weekly, m.week, m.class, m.dTotal, m.dWeekly, gold), "GUILD")
     lastSend = GetTime()
@@ -529,11 +532,21 @@ local function OnAddonMessage(prefix, text, channel, sender)
         return
     end
 
+    -- GFoA: kill-reset marker, sent just before each stats line
+    local kv = text:match("^KV:(%d+)$")
+    if kv then
+        db.killsFresh = db.killsFresh or {}
+        db.killsFresh[name] = tonumber(kv)
+        return
+    end
+
     local k, kw, wk, class, rest = text:match("^(%d+):(%d+):(%d+):(%u*)(.*)$")
     if not k then return end
     local d, dw, g = rest:match("^:(%d+):(%d+):(-?%d+)$") -- older clients don't send these
+    -- GFoA: a copy from before the kill reset still sends its old totals: show 0 kills until it updates
+    local fresh = ((db.killsFresh and db.killsFresh[name]) or 0) >= KILLS_VERSION
     db.members[name] = {
-        total = tonumber(k), weekly = tonumber(kw), week = tonumber(wk), class = class,
+        total = fresh and tonumber(k) or 0, weekly = fresh and tonumber(kw) or 0, week = tonumber(wk), class = class,
         dTotal = tonumber(d) or 0, dWeekly = tonumber(dw) or 0, gold = tonumber(g) or -1,
         updated = time(),
     }
@@ -1596,6 +1609,7 @@ ev:SetScript("OnEvent", function(_, event, ...)
         GayFurriesLeaderboardDB = GayFurriesLeaderboardDB or {}
         db = GayFurriesLeaderboardDB
         db.members = db.members or {}
+        ResetCachedKills() -- GFoA: one-time guild kill reset (KILLS_VERSION 4)
         db.source = db.source or "api"
         -- GFoA: db.deaths is no longer defaulted here; deaths are per character in db.chars (see Char())
         if not db.theme then -- migrate from the old toggles
