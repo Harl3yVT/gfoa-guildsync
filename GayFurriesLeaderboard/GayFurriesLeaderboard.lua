@@ -1,6 +1,6 @@
 ---------------------------------------------------------------------
 -- Gay Furries of Azeroth Leaderboard
--- Three guild leaderboards: PvP kills, deaths (weekly + lifetime), gold.
+-- Three guild leaderboards: world PvP kills (battleground kills never count), deaths (weekly + lifetime), gold.
 -- Target: WoW Forever client 1.60.1 (Classic-style API, Interface 16001)
 ---------------------------------------------------------------------
 local PREFIX = "GPVPLB"
@@ -73,17 +73,59 @@ local function Char()
     return c
 end
 
+-- GFoA: the PvP board counts world PvP kills only, never battleground kills. GetPVPLifetimeStats() includes BG
+-- kills and can't be split, so the board keeps its own per-character counters that only grow outside a BG:
+--   c.worldKills  - increases of the API lifetime count seen outside a BG (c.apiSeen = last API value seen)
+--   c.logWorld    - honorable-kill chat lines seen outside a BG (fallback / "/gpvp source log")
+-- c.logKills still counts every honor line (debug only). Kills made before this update can't be split, so the
+-- board restarted at 0 for everyone (c.killsV marks the one-time re-baseline).
+local KILLS_VERSION = 2
+local wasBG = false -- were we in a battleground at the last kill sync (this session)
+
+local function InBattleground()
+    if UnitInBattleground and UnitInBattleground("player") then return true end
+    if IsInInstance then
+        local inInstance, kind = IsInInstance()
+        if inInstance and (kind == "pvp" or kind == "arena") then return true end
+    end
+    return false
+end
+
+-- Folds new API kills into c.worldKills unless they were made in a BG. zoneChange = true for loading screens:
+-- kills read then belong to the zone we just left (wasBG), not the one we arrived in.
+local function SyncKills(zoneChange)
+    if not db or not ready then return end -- honor stats can read 0 for a moment after login
+    local c = Char()
+    local nowBG = InBattleground()
+    local inBG = wasBG or (not zoneChange and nowBG)
+    local api = ApiLifetimeKills()
+    if api then
+        if c.apiSeen == nil then
+            c.apiSeen = api -- first reading: baseline only
+        elseif api > c.apiSeen then
+            if not inBG then c.worldKills = (c.worldKills or 0) + (api - c.apiSeen) end
+            c.apiSeen = api
+        end -- a lower reading is a bad read (the lifetime count never drops): ignore it
+    end
+    wasBG = nowBG
+end
+
 local function CurrentKills()
     local c = Char() -- GFoA: per character
-    if db.source == "log" then
-        return c.logKills or 0
+    if db.source == "log" or not ApiLifetimeKills() then
+        return c.logWorld or 0
     end
-    return ApiLifetimeKills() or c.logKills or 0
+    return c.worldKills or 0
 end
 
 -- Updates and returns the player's own entry.
 local function UpdateOwn()
     local c = Char() -- GFoA: per character (was db.*)
+    SyncKills()
+    if c.killsV ~= KILLS_VERSION then -- GFoA: switched to world-only kills: re-baseline this week once
+        c.killsV = KILLS_VERSION
+        c.weekBase = nil
+    end
     local wk = CurrentWeekId()
     local kills = CurrentKills()
     local deaths = c.deaths or 0
@@ -1522,6 +1564,7 @@ ev:RegisterEvent("GUILD_ROSTER_UPDATE")
 -- these may not exist on every client; don't error if they don't
 pcall(ev.RegisterEvent, ev, "PLAYER_PVP_KILLS_CHANGED")
 pcall(ev.RegisterEvent, ev, "CHAT_MSG_COMBAT_HONOR_GAIN")
+pcall(ev.RegisterEvent, ev, "ZONE_CHANGED_NEW_AREA")
 pcall(ev.RegisterEvent, ev, "TRADE_SHOW")
 pcall(ev.RegisterEvent, ev, "TRADE_ACCEPT_UPDATE")
 pcall(ev.RegisterEvent, ev, "TRADE_CLOSED")
@@ -1544,6 +1587,7 @@ ev:SetScript("OnEvent", function(_, event, ...)
         ApplyTheme()
 
     elseif event == "PLAYER_ENTERING_WORLD" then
+        SyncKills(true) -- GFoA: kills read now belong to the zone we left (entering or leaving a BG)
         -- wait a moment so honor stats and money are loaded before the first snapshot
         C_Timer.After(5, function()
             if ready then return end
@@ -1587,10 +1631,16 @@ ev:SetScript("OnEvent", function(_, event, ...)
         if db and IsHonorKillMessage((...)) then
             local c = Char() -- GFoA: per character
             c.logKills = (c.logKills or 0) + 1
+            if not InBattleground() then c.logWorld = (c.logWorld or 0) + 1 end -- GFoA: world PvP only
         end
+        SyncKills()
         if ready then ScheduleBroadcast() end
 
-    else -- PLAYER_MONEY / PLAYER_PVP_KILLS_CHANGED / CHAT_MSG_COMBAT_HONOR_GAIN
+    elseif event == "ZONE_CHANGED_NEW_AREA" then
+        SyncKills(true)
+
+    else -- PLAYER_MONEY / PLAYER_PVP_KILLS_CHANGED
+        if event == "PLAYER_PVP_KILLS_CHANGED" then SyncKills() end
         if ready then ScheduleBroadcast() end
     end
 end)
@@ -1617,7 +1667,8 @@ SlashCmdList["GUILDPVPBOARD"] = function(msg)
         print("|cff33ff99GayFurriesLeaderboard debug|r")
         print("  my full name:", MyName(), "| UnitName:", tostring((UnitName("player"))), "second value:", tostring((select(2, UnitName("player")))))
         print("  GetPVPLifetimeStats exists:", GetPVPLifetimeStats ~= nil, "value:", tostring(api))
-        print("  kills counted from honor messages:", c.logKills or 0)
+        print("  kills counted from honor messages:", c.logKills or 0, "outside BGs:", c.logWorld or 0)
+        print("  world PvP kills (no BGs):", c.worldKills or 0, "| in a BG now:", tostring(InBattleground()))
         print("  source in use:", db.source)
         print("  deaths counted:", c.deaths or 0, "weekly base:", tostring(c.dWeekBase))
         print("  sharing gold:", tostring(db.shareGold ~= false))

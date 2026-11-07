@@ -280,11 +280,23 @@ function L.memberEntry(discord, name)
   return discord.characters[key], key
 end
 
--- The main's name when name is an alt, else nil.
+-- true when `main` is a registered main in the data: it has its own entry and that entry names itself as main.
+-- Guards against a link that changed or disappeared on the Discord side (an officer undid or moved a wrong roster
+-- match, or a relayed copy and the file disagree): an alt never points at a character that isn't a main any more.
+local function isMainKey(chars, main)
+  if type(main) ~= "string" or main == "" then return false end
+  local key = characterKey(chars, main)
+  local m = key and chars[key]
+  return type(m) == "table" and m.registered ~= false and type(m.main) == "string"
+    and string.lower(m.main) == string.lower(key)
+end
+
+-- The main's name when name is an alt, else nil (also nil when that main isn't a registered main in the data).
 function L.altOf(discord, name)
   local e, key = L.memberEntry(discord, name)
   if not e or type(e.main) ~= "string" or e.main == "" then return nil end
   if string.lower(e.main) == string.lower(key) then return nil end
+  if not isMainKey(discord.characters, e.main) then return nil end
   return e.main
 end
 
@@ -383,8 +395,8 @@ function L.altsOf(discord, name)
   local out = {}
   if type(discord) ~= "table" or type(discord.characters) ~= "table" then return out end
   local _, key = L.memberEntry(discord, name)
-  local short = string.lower(key or L.stripRealm(name) or "")
-  if short == "" then return out end
+  if not key or not isMainKey(discord.characters, key) then return out end   -- not (or no longer) a main
+  local short = string.lower(key)
   for k, e in pairs(discord.characters) do
     if type(k) == "string" and type(e) == "table" and type(e.main) == "string"
         and string.lower(e.main) == short and string.lower(k) ~= short then
