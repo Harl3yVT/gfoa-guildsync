@@ -1,8 +1,8 @@
 ## Interface: 16001
 ## Title: Gay Furries of Azeroth Leaderboard
-## Notes: Gay Furries of Azeroth guild leaderboards: world PvP kills (no battlegrounds), deaths, gold, duels and deathrolls. Every member needs the addon.
+## Notes: Gay Furries of Azeroth guild leaderboards: PvP kills (battlegrounds no longer count), deaths, gold, duels and deathrolls. Every member needs the addon.
 ## Author: Sephya
-## Version: 0.2.0
+## Version: 0.2.1
 ## SavedVariables: GayFurriesLeaderboardDB
 
 GayFurriesLeaderboard.lua

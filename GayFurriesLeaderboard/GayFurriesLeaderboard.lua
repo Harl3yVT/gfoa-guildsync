@@ -1,6 +1,6 @@
 ---------------------------------------------------------------------
 -- Gay Furries of Azeroth Leaderboard
--- Three guild leaderboards: world PvP kills (battleground kills never count), deaths (weekly + lifetime), gold.
+-- Three guild leaderboards: PvP kills (battleground kills stopped counting in 0.2.1; earlier kills kept), deaths (weekly + lifetime), gold.
 -- Target: WoW Forever client 1.60.1 (Classic-style API, Interface 16001)
 ---------------------------------------------------------------------
 local PREFIX = "GPVPLB"
@@ -77,9 +77,11 @@ end
 -- kills and can't be split, so the board keeps its own per-character counters that only grow outside a BG:
 --   c.worldKills  - increases of the API lifetime count seen outside a BG (c.apiSeen = last API value seen)
 --   c.logWorld    - honorable-kill chat lines seen outside a BG (fallback / "/gpvp source log")
--- c.logKills still counts every honor line (debug only). Kills made before this update can't be split, so the
--- board restarted at 0 for everyone (c.killsV marks the one-time re-baseline).
-local KILLS_VERSION = 2
+-- c.logKills still counts every honor line. Kills made before the switch can't be told apart (the game only gives one
+-- lifetime number), so everyone KEEPS them: the first sync seeds the world counters with the old totals and only kills
+-- after that skip battlegrounds. c.killsV = 3 marks that seed. Version 2 (addon 1.8.3) wrongly restarted totals at 0;
+-- version 3 puts the lifetime count back and keeps this week's count where it was.
+local KILLS_VERSION = 3
 local wasBG = false -- were we in a battleground at the last kill sync (this session)
 
 local function InBattleground()
@@ -99,6 +101,25 @@ local function SyncKills(zoneChange)
     local nowBG = InBattleground()
     local inBG = wasBG or (not zoneChange and nowBG)
     local api = ApiLifetimeKills()
+    if c.killsV ~= KILLS_VERSION then -- one-time seed: keep every kill made before the switch
+        local logMode = db.source == "log" or not api
+        local old -- the number this week's base was measured against
+        if c.killsV == 2 then
+            old = logMode and (c.logWorld or 0) or (c.worldKills or 0)
+        else
+            old = logMode and (c.logKills or 0) or api
+        end
+        if api then
+            c.worldKills = math.max(c.worldKills or 0, api)
+            c.apiSeen = api
+        end
+        c.logWorld = math.max(c.logWorld or 0, c.logKills or 0)
+        c.killsV = KILLS_VERSION
+        local new = logMode and c.logWorld or c.worldKills
+        if c.weekBase then c.weekBase = c.weekBase + (new - old) end -- this week's count stays the same
+        wasBG = nowBG
+        return
+    end
     if api then
         if c.apiSeen == nil then
             c.apiSeen = api -- first reading: baseline only
@@ -112,6 +133,10 @@ end
 
 local function CurrentKills()
     local c = Char() -- GFoA: per character
+    if c.killsV ~= KILLS_VERSION then -- not seeded yet (first seconds after login): the old lifetime count
+        if db.source == "log" then return c.logKills or 0 end
+        return ApiLifetimeKills() or c.logKills or 0
+    end
     if db.source == "log" or not ApiLifetimeKills() then
         return c.logWorld or 0
     end
@@ -122,10 +147,6 @@ end
 local function UpdateOwn()
     local c = Char() -- GFoA: per character (was db.*)
     SyncKills()
-    if c.killsV ~= KILLS_VERSION then -- GFoA: switched to world-only kills: re-baseline this week once
-        c.killsV = KILLS_VERSION
-        c.weekBase = nil
-    end
     local wk = CurrentWeekId()
     local kills = CurrentKills()
     local deaths = c.deaths or 0
