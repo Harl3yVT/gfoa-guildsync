@@ -73,7 +73,7 @@ local function renderLeaderboardRow(row, r)
     row.lb.net:SetText(tostring(r.total))
   elseif lbBoard == "rolls" then
     local c = (r.net or 0) > 0 and W.GOOD or ((r.net or 0) < 0 and W.WAIT or W.MUTED)
-    row.lb.net:SetText(c .. L.formatNetMoney(r.net) .. "|r")
+    row.lb.net:SetText(c .. L.formatNetMoney(r.net, c) .. "|r")
   else
     row.lb.net:SetText("")
   end

@@ -16,6 +16,13 @@ local KILLS_SEASON = 1
 local SendAddonMessage = (C_ChatInfo and C_ChatInfo.SendAddonMessage) or _G.SendAddonMessage
 local RegisterPrefix = (C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix) or _G.RegisterAddonMessagePrefix
 
+-- GFoA: coin letters in the game's gold / silver / copper colors; only the letter, not the number. resume: the
+-- color code to go back to after the letter, for amounts inside colored text (|r would end that color too).
+local COIN_COLOR = { g = "|cffffd700", s = "|cffc7c7cf", c = "|cffeda55f" }
+local function Coin(n, letter, resume)
+    return n .. COIN_COLOR[letter] .. letter .. (resume or "|r")
+end
+
 -- On WoW: Forever every character has a first name AND a surname. UnitName() only
 -- hands back the first name (its second value is the surname, not a realm), so build
 -- the full "First Surname" name from GetUnitName, the same form guildmates show up
@@ -587,7 +594,7 @@ local function CommitTrade()
             if ok then
                 d.bet = math.abs(net)
                 SendRoll(d)
-                print("|cff33ff99GayFurriesLeaderboard:|r deathroll bet recorded: " .. ((GetCoinTextureString and GetCoinTextureString(d.bet)) or (math.floor(d.bet / 10000) .. "g"))
+                print("|cff33ff99GayFurriesLeaderboard:|r deathroll bet recorded: " .. ((GetCoinTextureString and GetCoinTextureString(d.bet)) or Coin(math.floor(d.bet / 10000), "g"))
                     .. " (" .. d.w .. " beat " .. d.l .. ")")
                 if Refresh then Refresh() end
                 return
@@ -735,28 +742,28 @@ local function FormatMoney(c)
     if GetCoinTextureString then return GetCoinTextureString(c) end
     local g = math.floor(c / 10000)
     local s = math.floor((c % 10000) / 100)
-    return string.format("%dg %ds %dc", g, s, c % 100)
+    return Coin(g, "g") .. " " .. Coin(s, "s") .. " " .. Coin(c % 100, "c")
 end
 
 -- compact money text: 1,250g 50s
-local function ShortMoney(c)
+local function ShortMoney(c, resume)
     c = math.abs(c or 0)
     local g, s, cp = math.floor(c / 10000), math.floor((c % 10000) / 100), c % 100
     if g > 0 then
         local str = tostring(g):reverse():gsub("(%d%d%d)", "%1,"):reverse()
         str = str:gsub("^,", "")
-        return str .. "g" .. (s > 0 and (" " .. s .. "s") or "")
+        return Coin(str, "g", resume) .. (s > 0 and (" " .. Coin(s, "s", resume)) or "")
     elseif s > 0 then
-        return s .. "s" .. (cp > 0 and (" " .. cp .. "c") or "")
+        return Coin(s, "s", resume) .. (cp > 0 and (" " .. Coin(cp, "c", resume)) or "")
     end
-    return cp .. "c"
+    return Coin(cp, "c", resume)
 end
 
 -- +green / -red net amount
 local function NetText(c)
-    if c > 0 then return "|cff2fb35a+" .. ShortMoney(c) .. "|r" end
-    if c < 0 then return "|cffe0443e-" .. ShortMoney(c) .. "|r" end
-    return "0g"
+    if c > 0 then return "|cff2fb35a+" .. ShortMoney(c, "|cff2fb35a") .. "|r" end
+    if c < 0 then return "|cffe0443e-" .. ShortMoney(c, "|cffe0443e") .. "|r" end
+    return Coin(0, "g")
 end
 
 local function Hex(c)
