@@ -271,6 +271,108 @@ local function RecordDuel(w, l, wc, lc, t)
 end
 
 ---------------------------------------------------------------------
+-- GFoA: Overall board (class, level, /played time, two main professions, highest single hit)
+---------------------------------------------------------------------
+-- Main professions are the skills under the Professions header. Secondary skills (Cooking, Fishing, First Aid) sit
+-- under their own header and Poisons is a rogue class skill; they're also filtered by name in case a client lists
+-- them differently.
+local NOT_MAIN_PROFESSION = { ["Cooking"] = true, ["Fishing"] = true, ["First Aid"] = true, ["Poisons"] = true }
+-- Short names, used on the Overall board when both full names don't fit.
+local PROF_SHORT = {
+    Alchemy = "Alch", Blacksmithing = "BS", Enchanting = "Ench", Engineering = "Eng", Herbalism = "Herb",
+    Leatherworking = "LW", Mining = "Mine", Skinning = "Skin", Tailoring = "Tailor", Jewelcrafting = "JC",
+}
+
+-- This character's main professions (up to 2), or nil when the skill list can't be read right now (not loaded yet,
+-- or the Professions header is collapsed): keep the saved ones then.
+local function ReadMainProfessions()
+    if not GetNumSkillLines or not GetSkillLineInfo then return nil end
+    local n = GetNumSkillLines() or 0
+    if n == 0 then return nil end
+    local header = TRADE_SKILLS or "Professions"
+    local out, inProf, sawHeader = {}, false, false
+    for i = 1, n do
+        local name, isHeader, isExpanded = GetSkillLineInfo(i)
+        if isHeader then
+            inProf = (name == header) or (name == "Professions")
+            if inProf then
+                sawHeader = true
+                if not isExpanded then return nil end
+            end
+        elseif inProf and name and not NOT_MAIN_PROFESSION[name] and #out < 2 then
+            out[#out + 1] = name
+        end
+    end
+    if not sawHeader then return nil end
+    return out
+end
+
+-- Played time comes only from /played (typed by the player; the addon never asks, so chat stays quiet). After that
+-- it keeps counting while this character is online: c.played at c.playedAt, folded in on logout.
+local playedSession = false
+local function PlayedNow(c)
+    if type(c.played) ~= "number" then return nil end
+    if type(c.playedAt) ~= "number" then return c.played end
+    return c.played + math.max(0, time() - c.playedAt)
+end
+
+-- Highest single hit: from your own combat chat lines (the combat log is off limits to addons here), parsed with
+-- the client's own global strings so they match its language; English " for N" as the fallback.
+local HIT_STRINGS = {
+    "COMBATHITSELFOTHER", "COMBATHITCRITSELFOTHER", "COMBATHITSCHOOLSELFOTHER", "COMBATHITCRITSCHOOLSELFOTHER",
+    "SPELLLOGSELFOTHER", "SPELLLOGCRITSELFOTHER", "SPELLLOGSCHOOLSELFOTHER", "SPELLLOGCRITSCHOOLSELFOTHER",
+}
+local hitPatterns
+local function BuildHitPatterns()
+    hitPatterns = {}
+    for _, key in ipairs(HIT_STRINGS) do
+        local fmt = _G[key]
+        if type(fmt) == "string" then
+            local pos, amountPos = 0, nil
+            local p = fmt:gsub("%%%d*%$?([sd])", function(k)
+                pos = pos + 1
+                if k == "d" and not amountPos then amountPos = pos end
+                return (k == "d") and "\2" or "\1"
+            end)
+            if amountPos then
+                p = p:gsub("([%%%^%$%(%)%.%[%]%*%+%-%?])", "%%%1")
+                p = p:gsub("\1", "(.-)"):gsub("\2", "(%%d+)")
+                hitPatterns[#hitPatterns + 1] = { pattern = "^" .. p, amount = amountPos }
+            end
+        end
+    end
+end
+
+local function HitAmount(msg)
+    if type(msg) ~= "string" then return nil end
+    if issecretvalue and issecretvalue(msg) then return nil end
+    if not hitPatterns then BuildHitPatterns() end
+    for _, h in ipairs(hitPatterns) do
+        local caps = { msg:match(h.pattern) }
+        if caps[1] then return tonumber(caps[h.amount]) end
+    end
+    return tonumber(msg:match("^Your? .- for (%d+)"))
+end
+local hitEvents = 0 -- how many of the two combat chat events this client has (for /gpvp debug)
+
+-- Sends (and saves) this character's Overall board line.
+-- Message: O:level:played:topHit:profession1:profession2 (played -1 until /played was typed; professions may be empty)
+local function SendOverall()
+    local c = Char()
+    local profs = ReadMainProfessions()
+    if profs then c.profs = profs end
+    local p = c.profs or {}
+    local played = PlayedNow(c)
+    local o = {
+        level = UnitLevel("player") or 0, played = played and math.floor(played) or -1, hit = c.topHit or 0,
+        p1 = p[1] or "", p2 = p[2] or "", updated = time(),
+    }
+    db.overall = db.overall or {}
+    db.overall[MyName()] = o
+    SendAddonMessage(PREFIX, string.format("O:%d:%d:%d:%s:%s", o.level, o.played, o.hit, o.p1, o.p2), "GUILD")
+end
+
+---------------------------------------------------------------------
 -- Networking
 -- Message: kills:killsWeekly:weekId:CLASS:deaths:deathsWeekly:copper
 -- copper is -1 if the player chose not to share their gold.
@@ -280,6 +382,7 @@ local lastSend, pending = 0, false
 local function Broadcast()
     if not ready or not IsInGuild() then return end
     local m = UpdateOwn()
+    SendOverall() -- GFoA: the Overall board line ("O:..."), ignored by older clients
     local gold = (db.shareGold == false) and -1 or m.gold
     SendAddonMessage(PREFIX, string.format("%d:%d:%d:%s:%d:%d:%.0f",
         m.total, m.weekly, m.week, m.class, m.dTotal, m.dWeekly, gold), "GUILD")
@@ -509,6 +612,17 @@ local function OnAddonMessage(prefix, text, channel, sender)
     local name = Ambiguate(sender, "short")
     if name == MyName() then return end
 
+    -- GFoA Overall board: O:level:played:topHit:profession1:profession2
+    local ol, op, oh, p1, p2 = text:match("^O:(%d+):(%-?%d+):(%d+):([^:]*):([^:]*)$")
+    if ol then
+        db.overall = db.overall or {}
+        db.overall[name] = {
+            level = tonumber(ol), played = tonumber(op), hit = tonumber(oh), p1 = p1, p2 = p2, updated = time(),
+        }
+        if Refresh then Refresh() end
+        return
+    end
+
     if text == "REQ" then
         -- stagger replies so the whole guild doesn't answer at once
         C_Timer.After(1 + math.random() * 8, Broadcast)
@@ -638,7 +752,7 @@ local function TimeAgo(sec)
 end
 
 -- the leaderboards
-local BOARD_ORDER = { "pvp", "deaths", "gold", "duels", "rolls", "rollrank" }
+local BOARD_ORDER = { "pvp", "deaths", "gold", "duels", "rolls", "rollrank", "overall" }
 local BOARDS = {
     pvp = { label = "PvP Kills", subtitle = "PvP Leaderboard", defaultSort = "weekly",
         cols = { { key = "weekly", label = "Weekly" }, { key = "total", label = "Total" } } },
@@ -650,6 +764,8 @@ local BOARDS = {
     rolls = { label = "Deathroll", subtitle = "Deathroll History", defaultSort = "weekly", cols = {} },
     rollrank = { label = "Roll Ranks", subtitle = "Deathroll Rankings", defaultSort = "net",
         cols = { { key = "wins", label = "Record" }, { key = "net", label = "Net Gold" } } },
+    -- GFoA: class, level, name, played time, main professions, highest single hit
+    overall = { label = "Overall", subtitle = "Overall Leaderboard", defaultSort = "level", cols = {} },
 }
 
 -- two looks: the default pastel one, and the "straight" gray one
@@ -875,13 +991,14 @@ subtitle:SetPoint("TOP", title, "BOTTOM", 0, -4)
 local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
 close:SetPoint("TOPRIGHT", -4, -24)
 
--- the three tab buttons across the top
+-- the tab buttons across the top (GFoA: sized so all of them fit the narrowest window)
 local SetBoard -- forward declaration
 local tabs = {}
+local TAB_W, TAB_STEP = 60, 63
 for i, id in ipairs(BOARD_ORDER) do
     local b = CreateFrame("Button", nil, frame)
-    b:SetSize(70, 22)
-    b:SetPoint("TOPLEFT", frame, "TOP", -217 + (i - 1) * 73, -76)
+    b:SetSize(TAB_W, 22)
+    b:SetPoint("TOPLEFT", frame, "TOP", -(#BOARD_ORDER * TAB_STEP - (TAB_STEP - TAB_W)) / 2 + (i - 1) * TAB_STEP, -76)
     b.bg = b:CreateTexture(nil, "BACKGROUND")
     b.bg:SetAllPoints()
     b.bg:SetColorTexture(1, 1, 1, 1)
@@ -915,17 +1032,25 @@ local function StaticHeaderR(text, rightOffset, w)
 end
 
 local sortHeaders = {}
-local function SortHeader(x, w)
+local function SortHeader(x, w, left) -- left: x from the frame's left edge, text left-aligned (GFoA)
     local h = {}
     h.btn = CreateFrame("Button", nil, frame)
-    h.btn:SetPoint("TOPRIGHT", frame, "TOPRIGHT", x, -104)
+    if left then
+        h.btn:SetPoint("TOPLEFT", frame, "TOPLEFT", x, -104)
+    else
+        h.btn:SetPoint("TOPRIGHT", frame, "TOPRIGHT", x, -104)
+    end
     h.btn:SetSize(w, 16)
     h.fs = h.btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    h.fs:SetPoint("RIGHT", 0, 0)
+    h.fs:SetPoint(left and "LEFT" or "RIGHT", 0, 0)
     headerFS[#headerFS + 1] = h.fs
     h.arrow = h.btn:CreateTexture(nil, "OVERLAY")
     h.arrow:SetSize(9, 8)
-    h.arrow:SetPoint("RIGHT", h.fs, "LEFT", -3, 0)
+    if left then
+        h.arrow:SetPoint("LEFT", h.fs, "RIGHT", 3, 0)
+    else
+        h.arrow:SetPoint("RIGHT", h.fs, "LEFT", -3, 0)
+    end
     h.arrow:SetTexture("Interface\\Buttons\\UI-SortArrow")
     h.arrow:Hide()
     h.btn:SetScript("OnClick", function()
@@ -940,6 +1065,7 @@ local function SortHeader(x, w)
     h.btn:SetScript("OnEnter", function() local c = Theme().text; h.fs:SetTextColor(c[1], c[2], c[3]) end)
     h.btn:SetScript("OnLeave", function() local c = Theme().header; h.fs:SetTextColor(c[1], c[2], c[3]) end)
     sortHeaders[#sortHeaders + 1] = h
+    return h
 end
 local hdrRank = StaticHeader("#", 24, 24, "LEFT")
 local hdrName = StaticHeader("Name", 70, 182, "LEFT")
@@ -950,6 +1076,18 @@ local hdrBet = StaticHeaderR("Bet", -180, 70)
 SortHeader(-130, 70)  -- 1: weekly column
 SortHeader(-50, 80)  -- 2: total column
 SortHeader(-50, 160) -- 3: wide column (gold board)
+-- GFoA Overall board: Class | Lvl | Name | Played | Professions | Top Hit
+local hdrClass = StaticHeader("Class", 26, 34, "LEFT")
+local hdrProfs = StaticHeaderR("Professions", -102, 124)
+hdrProfs:SetJustifyH("LEFT")
+local overallHeaders = {
+    SortHeader(58, 40, true), -- level
+    SortHeader(-234, 60),     -- played
+    SortHeader(-46, 56),      -- top hit
+}
+overallHeaders[1].fs:SetText("Lvl")
+overallHeaders[2].fs:SetText("Played")
+overallHeaders[3].fs:SetText("Top Hit")
 
 local scroll = CreateFrame("ScrollFrame", "GayFurriesLeaderboardScroll", frame, "UIPanelScrollFrameTemplate")
 scroll:SetPoint("TOPLEFT", 20, -124)
@@ -1071,6 +1209,14 @@ local function LayoutRow(r)
     put(r.when, rowWidth - 130)
     put(r.rec, rowWidth - 62, 52)
     put(r.bet, rowWidth - 210, 70)
+    -- GFoA Overall board columns: hidden here, shown by RefreshOverall
+    put(r.lvl, 38, 24)
+    put(r.played, rowWidth - 250, 56)
+    put(r.profs, rowWidth - 186, 124)
+    put(r.hit, rowWidth - 58, 52)
+    r.lvl:Hide(); r.played:Hide(); r.profs:Hide(); r.hit:Hide()
+    r.icon:ClearAllPoints()
+    r.icon:SetPoint("LEFT", 32, 0)
 end
 
 local rows = {}
@@ -1108,6 +1254,12 @@ local function GetRow(i)
     r.rec = fs(358, 52, "RIGHT")
     r.bet = fs(220, 70, "RIGHT")
     r.bet:Hide()
+    -- GFoA Overall board fields
+    r.lvl = fs(38, 24, "LEFT")
+    r.played = fs(170, 56, "RIGHT")
+    r.profs = fs(234, 124, "LEFT")
+    r.hit = fs(362, 52, "RIGHT")
+    if r.profs.SetWordWrap then r.profs:SetWordWrap(false) end
     if r.bet.SetWordWrap then r.bet:SetWordWrap(false) end
     if r.rec.SetWordWrap then r.rec:SetWordWrap(false) end
     if r.duel.SetWordWrap then r.duel:SetWordWrap(false) end
@@ -1245,6 +1397,98 @@ local function RollStats()
     return list
 end
 
+-- GFoA: Overall board helpers
+local function PlayedText(sec)
+    if type(sec) ~= "number" or sec < 0 then return "?" end
+    local d, h, m = math.floor(sec / 86400), math.floor(sec % 86400 / 3600), math.floor(sec % 3600 / 60)
+    if d > 0 then return d .. "d " .. h .. "h" end
+    if h > 0 then return h .. "h " .. m .. "m" end
+    return m .. "m"
+end
+
+local function SetProfText(f, p1, p2)
+    local function join(a, b)
+        if a ~= "" and b ~= "" then return a .. " / " .. b end
+        return (a ~= "" and a) or b
+    end
+    local full = join(p1, p2)
+    if full == "" then f:SetText("-"); return end
+    f:SetText(full)
+    if f:GetStringWidth() > f:GetWidth() - 2 then f:SetText(join(PROF_SHORT[p1] or p1, PROF_SHORT[p2] or p2)) end
+end
+
+local function RefreshOverall(th, straight)
+    emptyFS:Hide()
+    db.overall = db.overall or {}
+    local list = {}
+    for name, m in pairs(db.members) do
+        local o = db.overall[name] or {} -- guildmates on an older version: "?" until they update
+        list[#list + 1] = {
+            name = name, class = m.class, level = o.level or -1, played = o.played or -1, hit = o.hit or -1,
+            p1 = o.p1 or "", p2 = o.p2 or "",
+        }
+    end
+    table.sort(list, function(a, b)
+        if a[sortKey] ~= b[sortKey] then
+            if sortAsc then return a[sortKey] < b[sortKey] end
+            return a[sortKey] > b[sortKey]
+        end
+        return a.name < b.name
+    end)
+    for i, e in ipairs(list) do
+        local r = GetRow(i)
+        local c = th.stripes[(i - 1) % 6 + 1]
+        r.bar:SetColorTexture(c[1], c[2], c[3], 1)
+        r.bg:SetColorTexture(1, 1, 1, (i % 2 == 0) and th.alt or 0)
+        LayoutRow(r)
+        r.duel:Hide(); r.when:Hide(); r.rec:Hide(); r.bet:Hide()
+        r.rank:Hide(); r.weekly:Hide(); r.total:Hide(); r.gold:Hide()
+        r.icon:ClearAllPoints()
+        r.icon:SetPoint("LEFT", 12, 0)
+        local tc = CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[e.class]
+        if tc then
+            r.icon:SetTexCoord(tc[1], tc[2], tc[3], tc[4])
+            r.icon:Show()
+        else
+            r.icon:Hide()
+        end
+        r.name:ClearAllPoints()
+        r.name:SetPoint("LEFT", r, "LEFT", 66, 0)
+        r.name:SetWidth(math.max(60, rowWidth - 66 - 254))
+        r.name:Show()
+        if straight then
+            r.name:SetText(e.name)
+        else
+            r.name:SetText("|cff" .. th.prefix .. (CUTE[i] or CUTE_FALLBACK) .. "|r " .. e.name)
+            if r.name:GetStringWidth() > (r.name:GetWidth() - 2) then r.name:SetText(e.name) end
+        end
+        r.lvl:SetText(e.level > 0 and tostring(e.level) or "?")
+        r.played:SetText(PlayedText(e.played))
+        SetProfText(r.profs, e.p1, e.p2)
+        r.hit:SetText(e.hit > 0 and tostring(e.hit) or (e.hit == 0 and "-" or "?"))
+        for _, f in ipairs({ r.name, r.lvl, r.played, r.profs, r.hit }) do
+            f:SetTextColor(th.text[1], th.text[2], th.text[3])
+            f:Show()
+        end
+        r:Show()
+    end
+    for i = #list + 1, #rows do rows[i]:Hide() end
+    content:SetHeight(math.max(1, #list * ROW_H))
+    if #list == 0 then
+        emptyFS:SetText("No guildmates yet.\nThey show up once their\naddon sends its stats.")
+        emptyFS:SetTextColor(th.header[1], th.header[2], th.header[3])
+        emptyFS:Show()
+    end
+    for _, h in ipairs(sortHeaders) do
+        if h.btn:IsShown() and h.key == sortKey then
+            h.arrow:Show()
+            h.arrow:SetTexCoord(0, 0.5625, sortAsc and 1 or 0, sortAsc and 0 or 1)
+        else
+            h.arrow:Hide()
+        end
+    end
+end
+
 function Refresh()
     if not frame:IsShown() or not db then return end
     local th = Theme()
@@ -1254,6 +1498,9 @@ function Refresh()
         return
     elseif board == "rolls" then
         RefreshRolls(th)
+        return
+    elseif board == "overall" then
+        RefreshOverall(th, straight)
         return
     end
     emptyFS:Hide()
@@ -1355,6 +1602,9 @@ local function ConfigureBoard()
     local isRolls = (board == "rolls")
     local isLog = (board == "duels") or isRolls
     for _, h in ipairs(sortHeaders) do h.btn:Hide() end
+    hdrClass:Hide(); hdrProfs:Hide() -- GFoA Overall board headers
+    hdrName:ClearAllPoints()
+    hdrName:SetPoint("TOPLEFT", board == "overall" and 86 or 70, -106)
     if isLog then
         hdrRank:Hide(); hdrName:Hide()
         hdrDuel:SetText(isRolls and "Deathroll" or "Duel")
@@ -1365,7 +1615,13 @@ local function ConfigureBoard()
     else
         hdrRank:Show(); hdrName:Show()
         hdrDuel:Hide(); hdrWhen:Hide(); hdrRecord:Hide(); hdrBet:Hide()
-        if board == "gold" then
+        if board == "overall" then
+            hdrRank:Hide(); hdrClass:Show(); hdrProfs:Show()
+            for i, key in ipairs({ "level", "played", "hit" }) do
+                overallHeaders[i].key = key
+                overallHeaders[i].btn:Show()
+            end
+        elseif board == "gold" then
             local h = sortHeaders[3]
             h.key = "gold"
             h.fs:SetText("Total Wealth")
@@ -1586,6 +1842,13 @@ ev:RegisterEvent("GUILD_ROSTER_UPDATE")
 pcall(ev.RegisterEvent, ev, "PLAYER_PVP_KILLS_CHANGED")
 pcall(ev.RegisterEvent, ev, "CHAT_MSG_COMBAT_HONOR_GAIN")
 pcall(ev.RegisterEvent, ev, "ZONE_CHANGED_NEW_AREA")
+-- GFoA Overall board
+for _, e in ipairs({ "CHAT_MSG_COMBAT_SELF_HITS", "CHAT_MSG_SPELL_SELF_DAMAGE" }) do
+    if pcall(ev.RegisterEvent, ev, e) then hitEvents = hitEvents + 1 end
+end
+pcall(ev.RegisterEvent, ev, "TIME_PLAYED_MSG")
+pcall(ev.RegisterEvent, ev, "PLAYER_LOGOUT")
+pcall(ev.RegisterEvent, ev, "PLAYER_LEVEL_UP")
 pcall(ev.RegisterEvent, ev, "TRADE_SHOW")
 pcall(ev.RegisterEvent, ev, "TRADE_ACCEPT_UPDATE")
 pcall(ev.RegisterEvent, ev, "TRADE_CLOSED")
@@ -1596,6 +1859,7 @@ ev:SetScript("OnEvent", function(_, event, ...)
         GayFurriesLeaderboardDB = GayFurriesLeaderboardDB or {}
         db = GayFurriesLeaderboardDB
         db.members = db.members or {}
+        db.overall = db.overall or {} -- GFoA: Overall board lines, by name
         db.source = db.source or "api"
         -- GFoA: db.deaths is no longer defaulted here; deaths are per character in db.chars (see Char())
         if not db.theme then -- migrate from the old toggles
@@ -1609,6 +1873,11 @@ ev:SetScript("OnEvent", function(_, event, ...)
 
     elseif event == "PLAYER_ENTERING_WORLD" then
         SyncKills(true) -- GFoA: kills read now belong to the zone we left (entering or leaving a BG)
+        if db and not playedSession then -- GFoA: played time counts again from this login
+            playedSession = true
+            local c = Char()
+            if c.played then c.playedAt = time() end
+        end
         -- wait a moment so honor stats and money are loaded before the first snapshot
         C_Timer.After(5, function()
             if ready then return end
@@ -1660,6 +1929,38 @@ ev:SetScript("OnEvent", function(_, event, ...)
     elseif event == "ZONE_CHANGED_NEW_AREA" then
         SyncKills(true)
 
+    elseif event == "CHAT_MSG_COMBAT_SELF_HITS" or event == "CHAT_MSG_SPELL_SELF_DAMAGE" then
+        -- GFoA: highest single hit for the Overall board
+        if not db then return end
+        local amount = HitAmount((...))
+        if amount then
+            local c = Char()
+            if amount > (c.topHit or 0) then
+                c.topHit = amount
+                if ready then ScheduleBroadcast() end
+            end
+        end
+
+    elseif event == "TIME_PLAYED_MSG" then
+        -- GFoA: /played (typed by the player) gives the Overall board's played time
+        local total = ...
+        if db and type(total) == "number" then
+            local c = Char()
+            c.played, c.playedAt = math.floor(total), time()
+            if ready then ScheduleBroadcast() end
+        end
+
+    elseif event == "PLAYER_LOGOUT" then
+        if db then -- GFoA: fold this session's online time into the played time
+            local c = Char()
+            local p = PlayedNow(c)
+            if p then c.played = math.floor(p) end
+            c.playedAt = nil
+        end
+
+    elseif event == "PLAYER_LEVEL_UP" then
+        if ready then ScheduleBroadcast() end
+
     else -- PLAYER_MONEY / PLAYER_PVP_KILLS_CHANGED
         if event == "PLAYER_PVP_KILLS_CHANGED" then SyncKills() end
         if ready then ScheduleBroadcast() end
@@ -1693,6 +1994,10 @@ SlashCmdList["GUILDPVPBOARD"] = function(msg)
         print("  source in use:", db.source)
         print("  deaths counted:", c.deaths or 0, "weekly base:", tostring(c.dWeekBase))
         print("  sharing gold:", tostring(db.shareGold ~= false))
+        local profs = ReadMainProfessions() or c.profs or {}
+        print("  overall: level", tostring(UnitLevel("player")), "| played", PlayedText(PlayedNow(c) or -1),
+            "| professions", (profs[1] or "-") .. " / " .. (profs[2] or "-"), "| top hit", c.topHit or 0,
+            "| combat chat events", hitEvents .. "/2")
         local gs = 0
         for _ in pairs(guildSet) do gs = gs + 1 end
         print("  duels saved:", #(db.duels or {}), "deathrolls saved:", #(db.rolls or {}), "guild roster names known:", gs)
