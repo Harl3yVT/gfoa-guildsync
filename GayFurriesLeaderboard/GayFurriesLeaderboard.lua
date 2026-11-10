@@ -441,6 +441,26 @@ local function HitAmount(msg)
 end
 local hitEvents = 0 -- how many of the two combat chat events this client has (for /gpvp debug)
 
+-- Second source for the top hit, for clients where those chat lines never reach addons: UNIT_COMBAT, the damage
+-- your target takes. It can't tell whose hit it was, so it only counts while you're solo (no party or raid), on
+-- a target you can attack. Secret amounts (hidden from addons) are skipped.
+local targetDamage = "none seen yet" -- for /gpvp debug: "readable", "secret (hidden from addons)" or "none seen yet"
+local function Solo()
+    if IsInGroup then return not IsInGroup() end
+    if GetNumGroupMembers then return (GetNumGroupMembers() or 0) == 0 end
+    return (GetNumPartyMembers and GetNumPartyMembers() or 0) == 0 and (GetNumRaidMembers and GetNumRaidMembers() or 0) == 0
+end
+local function TargetHitAmount(unit, action, amount)
+    if unit ~= "target" then return nil end
+    if issecretvalue and issecretvalue(action) then targetDamage = "secret (hidden from addons)"; return nil end
+    if action ~= "WOUND" then return nil end
+    if issecretvalue and issecretvalue(amount) then targetDamage = "secret (hidden from addons)"; return nil end
+    if type(amount) ~= "number" or amount <= 0 then return nil end
+    targetDamage = "readable"
+    if not Solo() or not UnitCanAttack or not UnitCanAttack("player", "target") then return nil end
+    return amount
+end
+
 -- Sends (and saves) this character's Overall board line.
 -- Message: O:level:played:topHit:profession1:profession2 (played -1 until /played was typed; professions may be empty)
 local function SendOverall()
@@ -1943,8 +1963,11 @@ pcall(ev.RegisterEvent, ev, "CHAT_MSG_COMBAT_HONOR_GAIN")
 pcall(ev.RegisterEvent, ev, "ZONE_CHANGED_NEW_AREA")
 -- GFoA Overall board
 for _, e in ipairs({ "CHAT_MSG_COMBAT_SELF_HITS", "CHAT_MSG_SPELL_SELF_DAMAGE" }) do
-    if pcall(ev.RegisterEvent, ev, e) then hitEvents = hitEvents + 1 end
+    if pcall(ev.RegisterEvent, ev, e) and (not ev.IsEventRegistered or ev:IsEventRegistered(e)) then
+        hitEvents = hitEvents + 1
+    end
 end
+pcall(ev.RegisterEvent, ev, "UNIT_COMBAT")
 pcall(ev.RegisterEvent, ev, "TIME_PLAYED_MSG")
 pcall(ev.RegisterEvent, ev, "PLAYER_LOGOUT")
 pcall(ev.RegisterEvent, ev, "PLAYER_LEVEL_UP")
@@ -2030,10 +2053,16 @@ ev:SetScript("OnEvent", function(_, event, ...)
     elseif event == "ZONE_CHANGED_NEW_AREA" then
         SyncKills(true)
 
-    elseif event == "CHAT_MSG_COMBAT_SELF_HITS" or event == "CHAT_MSG_SPELL_SELF_DAMAGE" then
+    elseif event == "CHAT_MSG_COMBAT_SELF_HITS" or event == "CHAT_MSG_SPELL_SELF_DAMAGE" or event == "UNIT_COMBAT" then
         -- GFoA: highest single hit for the Overall board
         if not db then return end
-        local amount = HitAmount((...))
+        local amount
+        if event == "UNIT_COMBAT" then
+            local unit, action, _, dmg = ...
+            amount = TargetHitAmount(unit, action, dmg)
+        else
+            amount = HitAmount((...))
+        end
         if amount then
             local c = Char()
             if amount > (c.topHit or 0) then
@@ -2098,7 +2127,7 @@ SlashCmdList["GUILDPVPBOARD"] = function(msg)
         local profs = ReadMainProfessions() or c.profs or {}
         print("  overall: level", tostring(UnitLevel("player")), "| played", PlayedText(PlayedNow(c) or -1),
             "| professions", (profs[1] or "-") .. " / " .. (profs[2] or "-") .. " (from " .. profSource .. ")", "| top hit", c.topHit or 0,
-            "| combat chat events", hitEvents .. "/2")
+            "| combat chat events", hitEvents .. "/2", "| target damage", targetDamage)
         local gs = 0
         for _ in pairs(guildSet) do gs = gs + 1 end
         print("  duels saved:", #(db.duels or {}), "deathrolls saved:", #(db.rolls or {}), "guild roster names known:", gs)
