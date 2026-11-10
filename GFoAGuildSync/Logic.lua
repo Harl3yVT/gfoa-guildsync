@@ -715,14 +715,23 @@ function L.addLevelTime(stats, level, secs, cap)
   stats.levelTime[level] = (stats.levelTime[level] or 0) + secs
 end
 
--- 1234567 copper -> "123g 45s 67c"
-function L.formatMoney(c)
+-- Coin letter colors (the game's gold / silver / copper text colors). Only the letter is colored, not the number.
+L.COIN_COLOR = { g = "|cffffd700", s = "|cffc7c7cf", c = "|cffeda55f" }
+
+-- n followed by its colored coin letter. resume: the color code to go back to after the letter, for amounts inside
+-- colored text (a color code can't be nested: |r would end the outer color too); else "|r".
+function L.coin(n, letter, resume)
+  return n .. L.COIN_COLOR[letter] .. letter .. (resume or "|r")
+end
+
+-- 1234567 copper -> "123g 45s 67c" (letters in coin colors; resume as in L.coin)
+function L.formatMoney(c, resume)
   if type(c) ~= "number" then return "?" end
   c = math.floor(c)
   local g, s, cc = math.floor(c / 10000), math.floor(c % 10000 / 100), c % 100
-  if g > 0 then return string.format("%dg %ds %dc", g, s, cc) end
-  if s > 0 then return string.format("%ds %dc", s, cc) end
-  return cc .. "c"
+  if g > 0 then return L.coin(g, "g", resume) .. " " .. L.coin(s, "s", resume) .. " " .. L.coin(cc, "c", resume) end
+  if s > 0 then return L.coin(s, "s", resume) .. " " .. L.coin(cc, "c", resume) end
+  return L.coin(cc, "c", resume)
 end
 
 -- Pre-raid checklist rows { text, done, unknown } for one character. itemCount(id) -> number or nil (unknown).
@@ -1226,12 +1235,12 @@ function L.sortLeaderboard(rows, key, reverse)
   return out
 end
 
--- "+12g 50s 0c" / "-3s 0c" / "0c" for a net copper amount.
-function L.formatNetMoney(c)
+-- "+12g 50s 0c" / "-3s 0c" / "0c" for a net copper amount (letters in coin colors; resume as in L.coin).
+function L.formatNetMoney(c, resume)
   if type(c) ~= "number" then return "?" end
-  if c > 0 then return "+" .. L.formatMoney(c) end
-  if c < 0 then return "-" .. L.formatMoney(-c) end
-  return "0c"
+  if c > 0 then return "+" .. L.formatMoney(c, resume) end
+  if c < 0 then return "-" .. L.formatMoney(-c, resume) end
+  return L.coin(0, "c", resume)
 end
 
 -- ---------------------------------------------------------------------------
