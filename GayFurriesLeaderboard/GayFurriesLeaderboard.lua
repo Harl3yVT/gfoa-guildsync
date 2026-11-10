@@ -310,38 +310,87 @@ end
 ---------------------------------------------------------------------
 -- GFoA: Overall board (class, level, /played time, two main professions, highest single hit)
 ---------------------------------------------------------------------
--- Main professions are the skills under the Professions header. Secondary skills (Cooking, Fishing, First Aid) sit
--- under their own header and Poisons is a rogue class skill; they're also filtered by name in case a client lists
--- them differently.
+-- Main professions. Read three ways, first one that finds any wins (clients differ in which of these work):
+--   1. the skill list, matching profession names anywhere in it (no reliance on section headings)
+--   2. GetProfessions(): its first two slots are the main professions (cooking/fishing have their own slots)
+--   3. the profession spells you know (Apprentice to Artisan of each)
+-- Cooking, Fishing, First Aid and Poisons never count.
+local MAIN_PROFESSIONS = {
+    Alchemy = true, Blacksmithing = true, Enchanting = true, Engineering = true, Herbalism = true,
+    Leatherworking = true, Mining = true, Skinning = true, Tailoring = true, Jewelcrafting = true, Inscription = true,
+}
 local NOT_MAIN_PROFESSION = { ["Cooking"] = true, ["Fishing"] = true, ["First Aid"] = true, ["Poisons"] = true }
+-- Profession rank spells (Apprentice, Journeyman, Expert, Artisan).
+local PROFESSION_SPELLS = {
+    Alchemy = { 2259, 3101, 3464, 11611 },        Blacksmithing = { 2018, 3100, 3538, 9785 },
+    Enchanting = { 7411, 7412, 7413, 13920 },     Engineering = { 4036, 4037, 4038, 12656 },
+    Herbalism = { 2366, 2368, 3570, 11993 },      Leatherworking = { 2108, 3104, 3811, 10662 },
+    Mining = { 2575, 2576, 3564, 10248 },         Skinning = { 8613, 8617, 8618, 10768 },
+    Tailoring = { 3908, 3909, 3910, 12180 },
+}
 -- Short names, used on the Overall board when both full names don't fit.
 local PROF_SHORT = {
     Alchemy = "Alch", Blacksmithing = "BS", Enchanting = "Ench", Engineering = "Eng", Herbalism = "Herb",
     Leatherworking = "LW", Mining = "Mine", Skinning = "Skin", Tailoring = "Tailor", Jewelcrafting = "JC",
 }
+local profSource = "none" -- which method found them last (for /gpvp debug)
 
--- This character's main professions (up to 2), or nil when the skill list can't be read right now (not loaded yet,
--- or the Professions header is collapsed): keep the saved ones then.
-local function ReadMainProfessions()
-    if not GetNumSkillLines or not GetSkillLineInfo then return nil end
-    local n = GetNumSkillLines() or 0
-    if n == 0 then return nil end
-    local header = TRADE_SKILLS or "Professions"
-    local out, inProf, sawHeader = {}, false, false
-    for i = 1, n do
-        local name, isHeader, isExpanded = GetSkillLineInfo(i)
-        if isHeader then
-            inProf = (name == header) or (name == "Professions")
-            if inProf then
-                sawHeader = true
-                if not isExpanded then return nil end
-            end
-        elseif inProf and name and not NOT_MAIN_PROFESSION[name] and #out < 2 then
-            out[#out + 1] = name
+local function ProfsFromSkillLines()
+    if not GetNumSkillLines or not GetSkillLineInfo then return {} end
+    local out = {}
+    for i = 1, GetNumSkillLines() or 0 do
+        local name, isHeader = GetSkillLineInfo(i)
+        if not isHeader and MAIN_PROFESSIONS[name or ""] and #out < 2 then out[#out + 1] = name end
+    end
+    return out
+end
+
+local function ProfsFromGetProfessions()
+    if not GetProfessions or not GetProfessionInfo then return {} end
+    local ok, p1, p2 = pcall(GetProfessions)
+    if not ok then return {} end
+    local out = {}
+    for _, idx in ipairs({ p1 or false, p2 or false }) do
+        if idx then
+            local name = GetProfessionInfo(idx)
+            if type(name) == "string" and name ~= "" and not NOT_MAIN_PROFESSION[name] then out[#out + 1] = name end
         end
     end
-    if not sawHeader then return nil end
     return out
+end
+
+local function KnowsSpell(id)
+    if IsPlayerSpell then return IsPlayerSpell(id) end
+    if IsSpellKnown then return IsSpellKnown(id) end
+    return false
+end
+
+local function ProfsFromSpells()
+    local out = {}
+    for name, ids in pairs(PROFESSION_SPELLS) do
+        for _, id in ipairs(ids) do
+            local ok, known = pcall(KnowsSpell, id)
+            if ok and known then out[#out + 1] = name; break end
+        end
+    end
+    table.sort(out)
+    while #out > 2 do table.remove(out) end
+    return out
+end
+
+-- This character's main professions (up to 2), or nil when none could be read right now: keep the saved ones then.
+local function ReadMainProfessions()
+    for _, m in ipairs({
+        { "skill list", ProfsFromSkillLines }, { "GetProfessions", ProfsFromGetProfessions }, { "spells", ProfsFromSpells },
+    }) do
+        local ok, out = pcall(m[2])
+        if ok and type(out) == "table" and #out > 0 then
+            profSource = m[1]
+            return out
+        end
+    end
+    profSource = "none found"
+    return nil
 end
 
 -- Played time comes only from /played (typed by the player; the addon never asks, so chat stays quiet). After that
@@ -391,6 +440,26 @@ local function HitAmount(msg)
     return tonumber(msg:match("^Your? .- for (%d+)"))
 end
 local hitEvents = 0 -- how many of the two combat chat events this client has (for /gpvp debug)
+
+-- Second source for the top hit, for clients where those chat lines never reach addons: UNIT_COMBAT, the damage
+-- your target takes. It can't tell whose hit it was, so it only counts while you're solo (no party or raid), on
+-- a target you can attack. Secret amounts (hidden from addons) are skipped.
+local targetDamage = "none seen yet" -- for /gpvp debug: "readable", "secret (hidden from addons)" or "none seen yet"
+local function Solo()
+    if IsInGroup then return not IsInGroup() end
+    if GetNumGroupMembers then return (GetNumGroupMembers() or 0) == 0 end
+    return (GetNumPartyMembers and GetNumPartyMembers() or 0) == 0 and (GetNumRaidMembers and GetNumRaidMembers() or 0) == 0
+end
+local function TargetHitAmount(unit, action, amount)
+    if unit ~= "target" then return nil end
+    if issecretvalue and issecretvalue(action) then targetDamage = "secret (hidden from addons)"; return nil end
+    if action ~= "WOUND" then return nil end
+    if issecretvalue and issecretvalue(amount) then targetDamage = "secret (hidden from addons)"; return nil end
+    if type(amount) ~= "number" or amount <= 0 then return nil end
+    targetDamage = "readable"
+    if not Solo() or not UnitCanAttack or not UnitCanAttack("player", "target") then return nil end
+    return amount
+end
 
 -- Sends (and saves) this character's Overall board line.
 -- Message: O:level:played:topHit:profession1:profession2 (played -1 until /played was typed; professions may be empty)
@@ -1888,14 +1957,78 @@ ev:RegisterEvent("PLAYER_DEAD")
 ev:RegisterEvent("PLAYER_MONEY")
 ev:RegisterEvent("CHAT_MSG_SYSTEM")
 ev:RegisterEvent("GUILD_ROSTER_UPDATE")
+
+-- GFoA Top Hit, main source: the game's own Combat Log chat tab. Addons can't read the combat log on this client,
+-- but its tab prints it, and lines starting "Your ..." are always your own hits, in any content (solo, group, raid):
+--   "Your Eviscerate hit Twilight Neophyte 303 Physical."  "Your Melee hit Twilight Neophyte 40 Physical."
+--   "Your Sinister Strike hit Twilight Neophyte 10 Physical. (111 Overkill)"
+-- The shown amount leaves out the overkill, so the full hit is the two added up (121 there).
+local combatLogLines = "none seen yet" -- for /gpvp debug: "readable", "secret (hidden from addons)", "none seen yet"
+local combatLogSeen = false           -- a hit was read from the tab: the solo-only UNIT_COMBAT source is ignored
+
+local function RecordHit(amount)
+    if not db or type(amount) ~= "number" or amount <= 0 then return end
+    local c = Char()
+    if amount > (c.topHit or 0) then
+        c.topHit = amount
+        if ready then ScheduleBroadcast() end
+    end
+end
+
+local function PlainText(t)
+    t = t:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+    t = t:gsub("|H.-|h(.-)|h", "%1"):gsub("|T.-|t", ""):gsub("|A.-|a", "")
+    return t
+end
+
+local LOG_VERBS = { "hit", "hits", "crit", "crits" }
+local function CombatLogHitAmount(text)
+    if type(text) ~= "string" then return nil end
+    if issecretvalue and issecretvalue(text) then combatLogLines = "secret (hidden from addons)"; return nil end
+    combatLogLines = "readable"
+    local t = PlainText(text):gsub("^[%d/:%.%s]+", "") -- an optional timestamp
+    t = t:gsub("[%[%]]", "")                         -- optional [brackets] around names
+    for _, verb in ipairs(LOG_VERBS) do
+        local target, amount = t:match("^Your .- " .. verb .. " (.-) (%d+)")
+        if not amount then target, amount = t:match("^You " .. verb .. " (.-) (%d+)") end
+        if amount and target ~= "you" and target ~= "yourself" then
+            return tonumber(amount) + (tonumber(t:match("%((%d+) [Oo]verkill%)")) or 0)
+        end
+    end
+    return nil
+end
+
+local hookedCombatLog = false
+local function HookCombatLog()
+    local f = _G.COMBATLOG -- set by the game's Blizzard_CombatLog to the Combat Log tab's chat frame
+    if type(f) ~= "table" and GetChatWindowInfo then -- else the chat tab named "Combat Log"
+        for i = 1, (NUM_CHAT_WINDOWS or 10) do
+            local name = GetChatWindowInfo(i)
+            if name and (name == (COMBAT_LOG or "Combat Log") or name == "Combat Log") then f = _G["ChatFrame" .. i]; break end
+        end
+    end
+    if hookedCombatLog or type(f) ~= "table" or type(f.AddMessage) ~= "function" or not hooksecurefunc then return end
+    hookedCombatLog = true
+    hooksecurefunc(f, "AddMessage", function(_, text)
+        local amount = CombatLogHitAmount(text)
+        if amount then
+            combatLogSeen = true
+            RecordHit(amount)
+        end
+    end)
+end
+
 -- these may not exist on every client; don't error if they don't
 pcall(ev.RegisterEvent, ev, "PLAYER_PVP_KILLS_CHANGED")
 pcall(ev.RegisterEvent, ev, "CHAT_MSG_COMBAT_HONOR_GAIN")
 pcall(ev.RegisterEvent, ev, "ZONE_CHANGED_NEW_AREA")
 -- GFoA Overall board
 for _, e in ipairs({ "CHAT_MSG_COMBAT_SELF_HITS", "CHAT_MSG_SPELL_SELF_DAMAGE" }) do
-    if pcall(ev.RegisterEvent, ev, e) then hitEvents = hitEvents + 1 end
+    if pcall(ev.RegisterEvent, ev, e) and (not ev.IsEventRegistered or ev:IsEventRegistered(e)) then
+        hitEvents = hitEvents + 1
+    end
 end
+pcall(ev.RegisterEvent, ev, "UNIT_COMBAT")
 pcall(ev.RegisterEvent, ev, "TIME_PLAYED_MSG")
 pcall(ev.RegisterEvent, ev, "PLAYER_LOGOUT")
 pcall(ev.RegisterEvent, ev, "PLAYER_LEVEL_UP")
@@ -1905,6 +2038,7 @@ pcall(ev.RegisterEvent, ev, "TRADE_CLOSED")
 
 ev:SetScript("OnEvent", function(_, event, ...)
     if event == "ADDON_LOADED" then
+        if ... == "Blizzard_CombatLog" then HookCombatLog(); return end -- GFoA Top Hit
         if ... ~= "GayFurriesLeaderboard" then return end
         GayFurriesLeaderboardDB = GayFurriesLeaderboardDB or {}
         db = GayFurriesLeaderboardDB
@@ -1923,6 +2057,7 @@ ev:SetScript("OnEvent", function(_, event, ...)
         ApplyTheme()
 
     elseif event == "PLAYER_ENTERING_WORLD" then
+        HookCombatLog() -- GFoA Top Hit (if the Combat Log tab loaded before this addon)
         SyncKills(true) -- GFoA: kills read now belong to the zone we left (entering or leaving a BG)
         if db and not playedSession then -- GFoA: played time counts again from this login
             playedSession = true
@@ -1981,10 +2116,17 @@ ev:SetScript("OnEvent", function(_, event, ...)
     elseif event == "ZONE_CHANGED_NEW_AREA" then
         SyncKills(true)
 
-    elseif event == "CHAT_MSG_COMBAT_SELF_HITS" or event == "CHAT_MSG_SPELL_SELF_DAMAGE" then
+    elseif event == "CHAT_MSG_COMBAT_SELF_HITS" or event == "CHAT_MSG_SPELL_SELF_DAMAGE" or event == "UNIT_COMBAT" then
         -- GFoA: highest single hit for the Overall board
         if not db then return end
-        local amount = HitAmount((...))
+        local amount
+        if event == "UNIT_COMBAT" then
+            local unit, action, _, dmg = ...
+            amount = TargetHitAmount(unit, action, dmg)
+            if combatLogSeen then amount = nil end -- the Combat Log tab is the better source when it works
+        else
+            amount = HitAmount((...))
+        end
         if amount then
             local c = Char()
             if amount > (c.topHit or 0) then
@@ -2048,8 +2190,9 @@ SlashCmdList["GUILDPVPBOARD"] = function(msg)
         print("  sharing gold:", tostring(db.shareGold ~= false))
         local profs = ReadMainProfessions() or c.profs or {}
         print("  overall: level", tostring(UnitLevel("player")), "| played", PlayedText(PlayedNow(c) or -1),
-            "| professions", (profs[1] or "-") .. " / " .. (profs[2] or "-"), "| top hit", c.topHit or 0,
-            "| combat chat events", hitEvents .. "/2")
+            "| professions", (profs[1] or "-") .. " / " .. (profs[2] or "-") .. " (from " .. profSource .. ")", "| top hit", c.topHit or 0,
+            "| combat log tab", combatLogLines .. (hookedCombatLog and "" or " (tab not found)"),
+            "| combat chat events", hitEvents .. "/2", "| target damage", targetDamage)
         local gs = 0
         for _ in pairs(guildSet) do gs = gs + 1 end
         print("  duels saved:", #(db.duels or {}), "deathrolls saved:", #(db.rolls or {}), "guild roster names known:", gs)
