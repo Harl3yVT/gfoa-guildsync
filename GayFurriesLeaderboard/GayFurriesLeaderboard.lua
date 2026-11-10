@@ -11,13 +11,6 @@ local PREFIX = "GPVPLB"
 local RESET_HOUR_UTC = 15
 local RESET_OFFSET = 5 * 86400 + RESET_HOUR_UTC * 3600 -- epoch 0 was a Thursday
 
--- GFoA: PvP kill season. The board KEEPS everyone's kills (Harley: never reset players' stats), so a season does not
--- zero the total: c.keptKills (the 1.8.4 total, frozen once) + c.seasonKills (world kills since). Older copies'
--- totals are on the same scale, so they are shown as-is.
--- 0.3.2 (addon 1.8.6, Harley's call): season 2 = a FULL reset. Everyone's kills restart at 0 and only world PvP
--- kills count from here; entries from older versions/seasons show 0 kills until they update.
-local KILLS_SEASON = 2
-
 local SendAddonMessage = (C_ChatInfo and C_ChatInfo.SendAddonMessage) or _G.SendAddonMessage
 local RegisterPrefix = (C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix) or _G.RegisterAddonMessagePrefix
 
@@ -86,11 +79,8 @@ local function Char()
         db.migratedChars = true
         db.chars[me] = c
     end
-    if c.ks ~= KILLS_SEASON then -- new kill season: count new world kills from 0 on top of the kept total
-        c.ks = KILLS_SEASON
-        c.seasonKills = 0
-        c.keptKills = 0 -- full reset: nothing kept (also stops SyncKills freezing an old total)
-        c.weekBase = 0
+    if c.ks ~= nil then -- GFoA: kill seasons are gone. Clear their fields; the week re-baselines on c.worldKills
+        c.ks, c.seasonKills, c.keptKills, c.weekBase = nil, nil, nil, nil
     end
     return c
 end
@@ -104,7 +94,7 @@ end
 -- after that skip battlegrounds. c.killsV = 3 marks that seed. Version 2 (addon 1.8.3) wrongly restarted totals at 0;
 -- version 3 puts the lifetime count back and keeps this week's count where it was.
 local KILLS_VERSION = 3
-local wasBG = false -- were we in a battleground at the last kill sync (this session)
+local wasBG, wasRaid = false, false -- were we in a battleground / raid group at the last kill sync (this session)
 
 local function InBattleground()
     if UnitInBattleground and UnitInBattleground("player") then return true end
@@ -115,11 +105,6 @@ local function InBattleground()
     return false
 end
 
--- GFoA kill season (0.3.0, kept-kills fix 0.3.1): kills made before are KEPT, not restarted at 0. Season kills are counted
--- one by one from the honorable-kill chat line, at the moment of the kill, and only outside battlegrounds and raid
--- groups. (The API lifetime count can't be used: it can't be split by where a kill happened, and an increase can show
--- up after you've left the BG.) 0.3.1: the board total is c.keptKills + c.seasonKills; c.keptKills is the old kept
--- total (c.worldKills / c.logWorld), frozen at the first sync on this version.
 local function InRaidGroup()
     if IsInRaid then return IsInRaid() and true or false end
     if GetNumRaidMembers then return (GetNumRaidMembers() or 0) > 0 end
@@ -130,44 +115,22 @@ local function KillCounts()
     return not InBattleground() and not InRaidGroup()
 end
 
--- Folds new API kills into c.worldKills unless they were made in a BG. zoneChange = true for loading screens:
--- kills read then belong to the zone we just left (wasBG), not the one we arrived in.
--- GFoA: the board's kills come from two signals that can both fire for the same kill, in either order: the
--- honorable-kill chat line (never reaches addons on some clients, e.g. WoW: Forever) and a rise in the game's lifetime
--- kill count. c.logPending holds kills the chat line counted that the lifetime count hasn't shown yet (it can update
--- late); c.apiPending holds kills the lifetime count counted in the last minute, so a chat line for the same kill
--- doesn't count it again. counts: the kill is world PvP (not in a battleground or a raid group).
-local function KillFromApi(c, d, counts)
-    local match = math.min(d, c.logPending or 0)
-    c.logPending = (c.logPending or 0) - match
-    local extra = d - match
-    if extra <= 0 then return end
-    c.apiPending, c.apiPendingAt = (c.apiPending or 0) + extra, time()
-    if counts then c.seasonKills = (c.seasonKills or 0) + extra end
-end
-
-local function KillFromLog(c, counts)
-    if (c.apiPending or 0) > 0 and time() - (c.apiPendingAt or 0) <= 60 then
-        c.apiPending = c.apiPending - 1 -- already counted from the lifetime count
-        return
-    end
-    c.apiPending = 0
-    c.logPending = (c.logPending or 0) + 1
-    if counts then c.seasonKills = (c.seasonKills or 0) + 1 end
-end
-
+-- Folds new API kills into c.worldKills unless they were made in a BG or raid group. zoneChange = true for loading
+-- screens: kills read then belong to the zone we just left (wasBG), not the one we arrived in.
+-- GFoA: this is the board's count. The honorable-kill chat line never reaches addons on this client (c.logKills stays
+-- empty while the API count grows), so the board can't be fed from it.
 local function SyncKills(zoneChange)
     if not db or not ready then return end -- honor stats can read 0 for a moment after login
     local c = Char()
-    local nowBG = InBattleground()
-    local inBG = wasBG or (not zoneChange and nowBG)
+    local nowBG, nowRaid = InBattleground(), InRaidGroup()
+    local skip = wasBG or wasRaid or (not zoneChange and (nowBG or nowRaid))
     local api = ApiLifetimeKills()
     if c.killsV ~= KILLS_VERSION then -- one-time seed: keep every kill made before the switch
         local logMode = db.source == "log" or not api
         -- GFoA fix: a 0 here is usually a bad read (honor stats load late). Seeding on it set apiSeen = 0, so the next
         -- real reading was added on top of the kept kills. Wait for a real number; a character with truly 0 kills
         -- seeds on its first kill instead.
-        if api == 0 and not logMode then wasBG = nowBG; return end
+        if api == 0 and not logMode then wasBG, wasRaid = nowBG, nowRaid; return end
         local old -- the number this week's base was measured against
         if c.killsV == 2 then
             old = logMode and (c.logWorld or 0) or (c.worldKills or 0)
@@ -182,29 +145,23 @@ local function SyncKills(zoneChange)
         c.killsV = KILLS_VERSION
         local new = logMode and c.logWorld or c.worldKills
         if c.weekBase then c.weekBase = c.weekBase + (new - old) end -- this week's count stays the same
-        if c.keptKills == nil then c.keptKills = math.max(0, new - (c.seasonKills or 0)) end -- GFoA: freeze kept total
-        wasBG = nowBG
+        wasBG, wasRaid = nowBG, nowRaid
         return
-    end
-    if c.keptKills == nil then -- GFoA: freeze the kept total (before folding in new kills, which seasonKills counts)
-        -- (logWorld already holds honor lines seen before this first sync, which seasonKills counted too)
-        c.keptKills = (db.source == "log" or not api) and math.max(0, (c.logWorld or 0) - (c.seasonKills or 0))
-            or (c.worldKills or 0)
     end
     if api then
         if c.apiSeen == nil then
             c.apiSeen = api -- first reading: baseline only
         elseif api > c.apiSeen then
-            if not inBG then c.worldKills = (c.worldKills or 0) + (api - c.apiSeen) end
-            KillFromApi(c, api - c.apiSeen, not inBG and not InRaidGroup()) -- GFoA: the board's count
+            if not skip then c.worldKills = (c.worldKills or 0) + (api - c.apiSeen) end
             c.apiSeen = api
         end -- a lower reading is a bad read (the lifetime count never drops): ignore it
     end
-    wasBG = nowBG
+    wasBG, wasRaid = nowBG, nowRaid
 end
 
 local function CurrentKills()
-    return Char().seasonKills or 0 -- GFoA: this kill season's world kills only (full reset in season 2)
+    local c = Char()
+    return c.worldKills or c.logWorld or 0 -- GFoA: logWorld only on a client without the lifetime API
 end
 
 -- Updates and returns the player's own entry.
@@ -232,7 +189,7 @@ local function UpdateOwn()
         dTotal = deaths, dWeekly = deaths - c.dWeekBase,
         -- GFoA fix: Hidden Mode also hides your own saved entry (SavedVariables get uploaded to the guild Discord)
         gold = (db.shareGold == false) and -1 or (GetMoney() or 0),
-        week = wk, class = class or "", updated = time(), ks = KILLS_SEASON,
+        week = wk, class = class or "", updated = time(),
     }
     local me = MyName()
     local first = UnitName("player")
@@ -333,7 +290,7 @@ local function RecordDuel(w, l, wc, lc, t)
 end
 
 ---------------------------------------------------------------------
--- GFoA: Overall board (class, level, /played time, two main professions, highest single hit)
+-- GFoA: Overall board (class, level, /played time, two main professions with their skill level)
 ---------------------------------------------------------------------
 -- Main professions. Read three ways, first one that finds any wins (clients differ in which of these work):
 --   1. the skill list, matching profession names anywhere in it (no reliance on section headings)
@@ -360,12 +317,18 @@ local PROF_SHORT = {
 }
 local profSource = "none" -- which method found them last (for /gpvp debug)
 
+-- "185 Mining", or just the name when the client gives no skill level.
+local function ProfLabel(name, rank)
+    if type(rank) == "number" and rank > 0 then return rank .. " " .. name end
+    return name
+end
+
 local function ProfsFromSkillLines()
     if not GetNumSkillLines or not GetSkillLineInfo then return {} end
     local out = {}
     for i = 1, GetNumSkillLines() or 0 do
-        local name, isHeader = GetSkillLineInfo(i)
-        if not isHeader and MAIN_PROFESSIONS[name or ""] and #out < 2 then out[#out + 1] = name end
+        local name, isHeader, _, rank = GetSkillLineInfo(i)
+        if not isHeader and MAIN_PROFESSIONS[name or ""] and #out < 2 then out[#out + 1] = ProfLabel(name, rank) end
     end
     return out
 end
@@ -377,8 +340,8 @@ local function ProfsFromGetProfessions()
     local out = {}
     for _, idx in ipairs({ p1 or false, p2 or false }) do
         if idx then
-            local name = GetProfessionInfo(idx)
-            if type(name) == "string" and name ~= "" and not NOT_MAIN_PROFESSION[name] then out[#out + 1] = name end
+            local name, _, rank = GetProfessionInfo(idx)
+            if type(name) == "string" and name ~= "" and not NOT_MAIN_PROFESSION[name] then out[#out + 1] = ProfLabel(name, rank) end
         end
     end
     return out
@@ -427,88 +390,47 @@ local function PlayedNow(c)
     return c.played + math.max(0, time() - c.playedAt)
 end
 
--- Highest single hit: from your own combat chat lines (the combat log is off limits to addons here), parsed with
--- the client's own global strings so they match its language; English " for N" as the fallback.
-local HIT_STRINGS = {
-    "COMBATHITSELFOTHER", "COMBATHITCRITSELFOTHER", "COMBATHITSCHOOLSELFOTHER", "COMBATHITCRITSCHOOLSELFOTHER",
-    "SPELLLOGSELFOTHER", "SPELLLOGCRITSELFOTHER", "SPELLLOGSCHOOLSELFOTHER", "SPELLLOGCRITSCHOOLSELFOTHER",
-}
-local hitPatterns
-local function BuildHitPatterns()
-    hitPatterns = {}
-    for _, key in ipairs(HIT_STRINGS) do
-        local fmt = _G[key]
-        if type(fmt) == "string" then
-            local pos, amountPos = 0, nil
-            local p = fmt:gsub("%%%d*%$?([sd])", function(k)
-                pos = pos + 1
-                if k == "d" and not amountPos then amountPos = pos end
-                return (k == "d") and "\2" or "\1"
-            end)
-            if amountPos then
-                p = p:gsub("([%%%^%$%(%)%.%[%]%*%+%-%?])", "%%%1")
-                p = p:gsub("\1", "(.-)"):gsub("\2", "(%%d+)")
-                hitPatterns[#hitPatterns + 1] = { pattern = "^" .. p, amount = amountPos }
-            end
+-- Gear score: the item levels of everything worn added up, without trinkets, shirt or tabard. Nothing worn = 0.
+-- nil while an item's data hasn't loaded: the last value is kept until the next send.
+local GS_SKIP_SLOT = { [4] = true, [13] = true, [14] = true, [19] = true } -- shirt, both trinkets, tabard
+local ItemInfo = (C_Item and C_Item.GetItemInfo) or _G.GetItemInfo
+local function ReadGearScore()
+    local sum = 0
+    for slot = 1, 19 do
+        local id = not GS_SKIP_SLOT[slot] and GetInventoryItemID("player", slot)
+        if id then
+            local _, _, _, itemLevel = ItemInfo(id)
+            if type(itemLevel) ~= "number" then return nil end
+            sum = sum + itemLevel
         end
     end
-end
-
-local function HitAmount(msg)
-    if type(msg) ~= "string" then return nil end
-    if issecretvalue and issecretvalue(msg) then return nil end
-    if not hitPatterns then BuildHitPatterns() end
-    for _, h in ipairs(hitPatterns) do
-        local caps = { msg:match(h.pattern) }
-        if caps[1] then return tonumber(caps[h.amount]) end
-    end
-    return tonumber(msg:match("^Your? .- for (%d+)"))
-end
-local hitEvents = 0 -- how many of the two combat chat events this client has (for /gpvp debug)
-
--- Second source for the top hit, for clients where those chat lines never reach addons: UNIT_COMBAT, the damage
--- your target takes. It can't tell whose hit it was, so it only counts while you're solo (no party or raid), on
--- a target you can attack. Secret amounts (hidden from addons) are skipped.
-local targetDamage = "none seen yet" -- for /gpvp debug: "readable", "secret (hidden from addons)" or "none seen yet"
-local function Solo()
-    if IsInGroup then return not IsInGroup() end
-    if GetNumGroupMembers then return (GetNumGroupMembers() or 0) == 0 end
-    return (GetNumPartyMembers and GetNumPartyMembers() or 0) == 0 and (GetNumRaidMembers and GetNumRaidMembers() or 0) == 0
-end
-local function TargetHitAmount(unit, action, amount)
-    if unit ~= "target" then return nil end
-    if issecretvalue and issecretvalue(action) then targetDamage = "secret (hidden from addons)"; return nil end
-    if action ~= "WOUND" then return nil end
-    if issecretvalue and issecretvalue(amount) then targetDamage = "secret (hidden from addons)"; return nil end
-    if type(amount) ~= "number" or amount <= 0 then return nil end
-    targetDamage = "readable"
-    if not Solo() or not UnitCanAttack or not UnitCanAttack("player", "target") then return nil end
-    return amount
+    return sum
 end
 
 -- Sends (and saves) this character's Overall board line.
--- Message: O:level:played:topHit:profession1:profession2 (played -1 until /played was typed; professions may be empty)
+-- Message: O:level:played:gearScore:profession1:profession2 (played -1 until /played was typed; professions may be empty)
+-- gearScore uses the old Top Hit slot, so older clients still read the line. A profession is "185 Mining".
 local function SendOverall()
     local c = Char()
     local profs = ReadMainProfessions()
     if profs then c.profs = profs end
     local p = c.profs or {}
+    local ok, gs = pcall(ReadGearScore)
+    if ok and gs then c.gs = gs end
     local played = PlayedNow(c)
     local o = {
-        level = UnitLevel("player") or 0, played = played and math.floor(played) or -1, hit = c.topHit or 0,
+        level = UnitLevel("player") or 0, played = played and math.floor(played) or -1, gs = c.gs or 0,
         p1 = p[1] or "", p2 = p[2] or "", updated = time(),
     }
     db.overall = db.overall or {}
     db.overall[MyName()] = o
-    SendAddonMessage(PREFIX, string.format("O:%d:%d:%d:%s:%s", o.level, o.played, o.hit, o.p1, o.p2), "GUILD")
+    SendAddonMessage(PREFIX, string.format("O:%d:%d:%d:%s:%s", o.level, o.played, o.gs, o.p1, o.p2), "GUILD")
 end
 
 ---------------------------------------------------------------------
 -- Networking
 -- Message: kills:killsWeekly:weekId:CLASS:deaths:deathsWeekly:copper
 -- copper is -1 if the player chose not to share their gold.
--- GFoA: followed by "S:season" (kill season, see KILLS_SEASON). Sent separately so older clients, whose parser
--- expects exactly the fields above, still read the main message; they ignore the S line.
 ---------------------------------------------------------------------
 local lastSend, pending = 0, false
 
@@ -519,7 +441,6 @@ local function Broadcast()
     local gold = (db.shareGold == false) and -1 or m.gold
     SendAddonMessage(PREFIX, string.format("%d:%d:%d:%s:%d:%d:%.0f",
         m.total, m.weekly, m.week, m.class, m.dTotal, m.dWeekly, gold), "GUILD")
-    SendAddonMessage(PREFIX, "S:" .. KILLS_SEASON, "GUILD")
     lastSend = GetTime()
     if Refresh then Refresh() end
 end
@@ -747,12 +668,12 @@ local function OnAddonMessage(prefix, text, channel, sender)
     -- GFoA fix: guild addon messages come back to the sender, sometimes under the first name only
     if name == MyName() or name == UnitName("player") then return end
 
-    -- GFoA Overall board: O:level:played:topHit:profession1:profession2
-    local ol, op, oh, p1, p2 = text:match("^O:(%d+):(%-?%d+):(%d+):([^:]*):([^:]*)$")
+    -- GFoA Overall board: O:level:played:gearScore:profession1:profession2
+    local ol, op, gs, p1, p2 = text:match("^O:(%d+):(%-?%d+):(%d+):([^:]*):([^:]*)$")
     if ol then
         db.overall = db.overall or {}
         db.overall[name] = {
-            level = tonumber(ol), played = tonumber(op), hit = tonumber(oh), p1 = p1, p2 = p2, updated = time(),
+            level = tonumber(ol), played = tonumber(op), gs = tonumber(gs), p1 = p1, p2 = p2, updated = time(),
         }
         if Refresh then Refresh() end
         return
@@ -761,14 +682,6 @@ local function OnAddonMessage(prefix, text, channel, sender)
     if text == "REQ" then
         -- stagger replies so the whole guild doesn't answer at once
         C_Timer.After(1 + math.random() * 8, Broadcast)
-        return
-    end
-
-    -- GFoA kill season, sent right after the sender's stats message
-    local ks = text:match("^S:(%d+)$")
-    if ks then
-        local m = db.members[name]
-        if m then m.ks = tonumber(ks); if Refresh then Refresh() end end
         return
     end
 
@@ -907,7 +820,7 @@ local BOARDS = {
     rolls = { label = "Deathroll", subtitle = "Deathroll History", defaultSort = "weekly", cols = {} },
     rollrank = { label = "Roll Ranks", subtitle = "Deathroll Rankings", defaultSort = "net",
         cols = { { key = "wins", label = "Record" }, { key = "net", label = "Net Gold" } } },
-    -- GFoA: class, level, name, played time, main professions, highest single hit
+    -- GFoA: class, level, name, played time, main professions with their skill level
     overall = { label = "Overall", subtitle = "Overall Leaderboard", defaultSort = "level", cols = {} },
 }
 
@@ -1219,18 +1132,18 @@ local hdrBet = StaticHeaderR("Bet", -180, 70)
 SortHeader(-130, 70)  -- 1: weekly column
 SortHeader(-50, 80)  -- 2: total column
 SortHeader(-50, 160) -- 3: wide column (gold board)
--- GFoA Overall board: Class | Lvl | Name | Played | Professions | Top Hit
+-- GFoA Overall board: Class | Lvl | Name | GS | Played | Professions
 local hdrClass = StaticHeader("Class", 26, 34, "LEFT")
-local hdrProfs = StaticHeaderR("Professions", -102, 124)
+local hdrProfs = StaticHeaderR("Professions", -50, 144)
 hdrProfs:SetJustifyH("LEFT")
 local overallHeaders = {
     SortHeader(58, 40, true), -- level
-    SortHeader(-234, 60),     -- played
-    SortHeader(-46, 56),      -- top hit
+    SortHeader(-202, 60),     -- played
+    SortHeader(-262, 34),     -- gear score
 }
 overallHeaders[1].fs:SetText("Lvl")
 overallHeaders[2].fs:SetText("Played")
-overallHeaders[3].fs:SetText("Top Hit")
+overallHeaders[3].fs:SetText("GS")
 
 local scroll = CreateFrame("ScrollFrame", "GayFurriesLeaderboardScroll", frame, "UIPanelScrollFrameTemplate")
 scroll:SetPoint("TOPLEFT", 20, -124)
@@ -1354,10 +1267,10 @@ local function LayoutRow(r)
     put(r.bet, rowWidth - 210, 70)
     -- GFoA Overall board columns: hidden here, shown by RefreshOverall
     put(r.lvl, 38, 24)
-    put(r.played, rowWidth - 250, 56)
-    put(r.profs, rowWidth - 186, 124)
-    put(r.hit, rowWidth - 58, 52)
-    r.lvl:Hide(); r.played:Hide(); r.profs:Hide(); r.hit:Hide()
+    put(r.gs, rowWidth - 252, 30)
+    put(r.played, rowWidth - 218, 56)
+    put(r.profs, rowWidth - 154, 146)
+    r.lvl:Hide(); r.gs:Hide(); r.played:Hide(); r.profs:Hide()
     r.icon:ClearAllPoints()
     r.icon:SetPoint("LEFT", 32, 0)
 end
@@ -1400,8 +1313,8 @@ local function GetRow(i)
     -- GFoA Overall board fields
     r.lvl = fs(38, 24, "LEFT")
     r.played = fs(170, 56, "RIGHT")
-    r.profs = fs(234, 124, "LEFT")
-    r.hit = fs(362, 52, "RIGHT")
+    r.gs = fs(168, 30, "RIGHT")
+    r.profs = fs(234, 146, "LEFT")
     if r.profs.SetWordWrap then r.profs:SetWordWrap(false) end
     if r.bet.SetWordWrap then r.bet:SetWordWrap(false) end
     if r.rec.SetWordWrap then r.rec:SetWordWrap(false) end
@@ -1557,7 +1470,14 @@ local function SetProfText(f, p1, p2)
     local full = join(p1, p2)
     if full == "" then f:SetText("-"); return end
     f:SetText(full)
-    if f:GetStringWidth() > f:GetWidth() - 2 then f:SetText(join(PROF_SHORT[p1] or p1, PROF_SHORT[p2] or p2)) end
+    if f:GetStringWidth() > f:GetWidth() - 2 then
+        local function short(p) -- "280 Leatherworking" -> "280 LW"
+            local rank, name = p:match("^(%d+) (.+)$")
+            if rank then return rank .. " " .. (PROF_SHORT[name] or name) end
+            return PROF_SHORT[p] or p
+        end
+        f:SetText(join(short(p1), short(p2)))
+    end
 end
 
 local function RefreshOverall(th, straight)
@@ -1567,7 +1487,7 @@ local function RefreshOverall(th, straight)
     for name, m in pairs(db.members) do
         local o = db.overall[name] or {} -- guildmates on an older version: "?" until they update
         list[#list + 1] = {
-            name = name, class = m.class, level = o.level or -1, played = o.played or -1, hit = o.hit or -1,
+            name = name, class = m.class, level = o.level or -1, played = o.played or -1, gs = o.gs or -1,
             p1 = o.p1 or "", p2 = o.p2 or "",
         }
     end
@@ -1597,7 +1517,7 @@ local function RefreshOverall(th, straight)
         end
         r.name:ClearAllPoints()
         r.name:SetPoint("LEFT", r, "LEFT", 66, 0)
-        r.name:SetWidth(math.max(60, rowWidth - 66 - 254))
+        r.name:SetWidth(math.max(60, rowWidth - 66 - 258))
         r.name:Show()
         if straight then
             r.name:SetText(e.name)
@@ -1606,10 +1526,10 @@ local function RefreshOverall(th, straight)
             if r.name:GetStringWidth() > (r.name:GetWidth() - 2) then r.name:SetText(e.name) end
         end
         r.lvl:SetText(e.level > 0 and tostring(e.level) or "?")
+        r.gs:SetText(e.gs >= 0 and tostring(e.gs) or "?")
         r.played:SetText(PlayedText(e.played))
         SetProfText(r.profs, e.p1, e.p2)
-        r.hit:SetText(e.hit > 0 and tostring(e.hit) or (e.hit == 0 and "-" or "?"))
-        for _, f in ipairs({ r.name, r.lvl, r.played, r.profs, r.hit }) do
+        for _, f in ipairs({ r.name, r.lvl, r.gs, r.played, r.profs }) do
             f:SetTextColor(th.text[1], th.text[2], th.text[3])
             f:Show()
         end
@@ -1659,10 +1579,9 @@ function Refresh()
     else
     for name, m in pairs(db.members) do
         local cur = (m.week == wk) -- a stale week counts as 0
-        local season = (m.ks == KILLS_SEASON) -- GFoA: kills from an older kill season or version count as 0
         list[#list + 1] = {
             name = name, class = m.class,
-            total = season and (m.total or 0) or 0, weekly = (season and cur) and (m.weekly or 0) or 0,
+            total = m.total or 0, weekly = cur and (m.weekly or 0) or 0,
             dTotal = m.dTotal or 0, dWeekly = cur and (m.dWeekly or 0) or 0,
             gold = m.gold or -1,
         }
@@ -1761,7 +1680,7 @@ local function ConfigureBoard()
         hdrDuel:Hide(); hdrWhen:Hide(); hdrRecord:Hide(); hdrBet:Hide()
         if board == "overall" then
             hdrRank:Hide(); hdrClass:Show(); hdrProfs:Show()
-            for i, key in ipairs({ "level", "played", "hit" }) do
+            for i, key in ipairs({ "level", "played", "gs" }) do
                 overallHeaders[i].key = key
                 overallHeaders[i].btn:Show()
             end
@@ -1955,7 +1874,6 @@ PlaceMini()
 -- Honorable-kill chat line (fallback kill counter; the combat log is off limits to addons here)
 ---------------------------------------------------------------------
 local honorPattern
-local honorLines = 0 -- honorable-kill chat lines seen this session (for /gpvp debug)
 local function IsHonorKillMessage(msg)
     if type(msg) ~= "string" then return false end
     if honorPattern == nil then
@@ -1984,98 +1902,27 @@ ev:RegisterEvent("PLAYER_MONEY")
 ev:RegisterEvent("CHAT_MSG_SYSTEM")
 ev:RegisterEvent("GUILD_ROSTER_UPDATE")
 
--- GFoA Top Hit, main source: the game's own Combat Log chat tab. Addons can't read the combat log on this client,
--- but its tab prints it, and lines starting "Your ..." are always your own hits, in any content (solo, group, raid):
---   "Your Eviscerate hit Twilight Neophyte 303 Physical."  "Your Melee hit Twilight Neophyte 40 Physical."
---   "Your Sinister Strike hit Twilight Neophyte 10 Physical. (111 Overkill)"
--- The shown amount leaves out the overkill, so the full hit is the two added up (121 there).
-local combatLogLines = "none seen yet" -- for /gpvp debug: "readable", "secret (hidden from addons)", "none seen yet"
-local combatLogSeen = false           -- a hit was read from the tab: the solo-only UNIT_COMBAT source is ignored
-
-local function RecordHit(amount)
-    if not db or type(amount) ~= "number" or amount <= 0 then return end
-    local c = Char()
-    if amount > (c.topHit or 0) then
-        c.topHit = amount
-        if ready then ScheduleBroadcast() end
-    end
-end
-
-local function PlainText(t)
-    t = t:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
-    t = t:gsub("|H.-|h(.-)|h", "%1"):gsub("|T.-|t", ""):gsub("|A.-|a", "")
-    return t
-end
-
-local LOG_VERBS = { "hit", "hits", "crit", "crits" }
-local function CombatLogHitAmount(text)
-    if type(text) ~= "string" then return nil end
-    if issecretvalue and issecretvalue(text) then combatLogLines = "secret (hidden from addons)"; return nil end
-    combatLogLines = "readable"
-    if not text:find("You", 1, true) then return nil end -- cheap skip: only "Your ..." / "You ..." lines are yours
-    local t = PlainText(text):gsub("^[%d/:%.%s]+", "") -- an optional timestamp
-    t = t:gsub("[%[%]]", "")                         -- optional [brackets] around names
-    for _, verb in ipairs(LOG_VERBS) do
-        local target, amount = t:match("^Your .- " .. verb .. " (.-) (%d+)")
-        if not amount then target, amount = t:match("^You " .. verb .. " (.-) (%d+)") end
-        if amount and target ~= "you" and target ~= "yourself" then
-            return tonumber(amount) + (tonumber(t:match("%((%d+) [Oo]verkill%)")) or 0)
-        end
-    end
-    return nil
-end
-
-local hookedCombatLog = false
-local function HookCombatLog()
-    local f = _G.COMBATLOG -- set by the game's Blizzard_CombatLog to the Combat Log tab's chat frame
-    if type(f) ~= "table" and GetChatWindowInfo then -- else the chat tab named "Combat Log"
-        for i = 1, (NUM_CHAT_WINDOWS or 10) do
-            local name = GetChatWindowInfo(i)
-            if name and (name == (COMBAT_LOG or "Combat Log") or name == "Combat Log") then f = _G["ChatFrame" .. i]; break end
-        end
-    end
-    if hookedCombatLog or type(f) ~= "table" or type(f.AddMessage) ~= "function" or not hooksecurefunc then return end
-    hookedCombatLog = true
-    hooksecurefunc(f, "AddMessage", function(_, text)
-        local amount = CombatLogHitAmount(text)
-        if amount then
-            combatLogSeen = true
-            RecordHit(amount)
-        end
-    end)
-end
-
 -- these may not exist on every client; don't error if they don't
 pcall(ev.RegisterEvent, ev, "PLAYER_PVP_KILLS_CHANGED")
 pcall(ev.RegisterEvent, ev, "CHAT_MSG_COMBAT_HONOR_GAIN")
 pcall(ev.RegisterEvent, ev, "ZONE_CHANGED_NEW_AREA")
--- GFoA Overall board
-for _, e in ipairs({ "CHAT_MSG_COMBAT_SELF_HITS", "CHAT_MSG_SPELL_SELF_DAMAGE" }) do
-    if pcall(ev.RegisterEvent, ev, e) and (not ev.IsEventRegistered or ev:IsEventRegistered(e)) then
-        hitEvents = hitEvents + 1
-    end
-end
--- only the target's UNIT_COMBAT is used: where the client can, don't wake up for every party/raid member's
-if not (ev.RegisterUnitEvent and pcall(ev.RegisterUnitEvent, ev, "UNIT_COMBAT", "target")) then
-    pcall(ev.RegisterEvent, ev, "UNIT_COMBAT")
-end
 pcall(ev.RegisterEvent, ev, "TIME_PLAYED_MSG")
 pcall(ev.RegisterEvent, ev, "PLAYER_LOGOUT")
 pcall(ev.RegisterEvent, ev, "PLAYER_LEVEL_UP")
+pcall(ev.RegisterEvent, ev, "PLAYER_EQUIPMENT_CHANGED") -- GFoA: gear score
 pcall(ev.RegisterEvent, ev, "TRADE_SHOW")
 pcall(ev.RegisterEvent, ev, "TRADE_ACCEPT_UPDATE")
 pcall(ev.RegisterEvent, ev, "TRADE_CLOSED")
 
 ev:SetScript("OnEvent", function(_, event, ...)
     if event == "ADDON_LOADED" then
-        if ... == "Blizzard_CombatLog" then HookCombatLog(); return end -- GFoA Top Hit
         if ... ~= "GayFurriesLeaderboard" then return end
         GayFurriesLeaderboardDB = GayFurriesLeaderboardDB or {}
         db = GayFurriesLeaderboardDB
         db.members = db.members or {}
         db.overall = db.overall or {} -- GFoA: Overall board lines, by name
         db.source = db.source or "api"
-        db.killSeason = KILLS_SEASON -- GFoA: read by GFoA Guild Sync's Leaderboards view (zeroes older seasons)
+        db.killSeason = nil -- GFoA: kill seasons are gone; a leftover value would make older Guild Sync copies zero kills
         -- GFoA: db.deaths is no longer defaulted here; deaths are per character in db.chars (see Char())
         if not db.theme then -- migrate from the old toggles
             db.theme = db.straight and "straight" or (db.cat and "cat" or "gay")
@@ -2087,7 +1934,6 @@ ev:SetScript("OnEvent", function(_, event, ...)
         ApplyTheme()
 
     elseif event == "PLAYER_ENTERING_WORLD" then
-        HookCombatLog() -- GFoA Top Hit (if the Combat Log tab loaded before this addon)
         SyncKills(true) -- GFoA: kills read now belong to the zone we left (entering or leaving a BG)
         if db and not playedSession then -- GFoA: played time counts again from this login
             playedSession = true
@@ -2137,34 +1983,13 @@ ev:SetScript("OnEvent", function(_, event, ...)
         if db and IsHonorKillMessage((...)) then
             local c = Char() -- GFoA: per character
             c.logKills = (c.logKills or 0) + 1
-            if not InBattleground() then c.logWorld = (c.logWorld or 0) + 1 end -- GFoA: world PvP only
-            KillFromLog(c, KillCounts()) -- GFoA: the board's count (once per kill, see KillFromApi)
-            honorLines = honorLines + 1
+            if KillCounts() then c.logWorld = (c.logWorld or 0) + 1 end -- GFoA: world PvP only
         end
         SyncKills()
         if ready then ScheduleBroadcast() end
 
     elseif event == "ZONE_CHANGED_NEW_AREA" then
         SyncKills(true)
-
-    elseif event == "CHAT_MSG_COMBAT_SELF_HITS" or event == "CHAT_MSG_SPELL_SELF_DAMAGE" or event == "UNIT_COMBAT" then
-        -- GFoA: highest single hit for the Overall board
-        if not db then return end
-        local amount
-        if event == "UNIT_COMBAT" then
-            local unit, action, _, dmg = ...
-            amount = TargetHitAmount(unit, action, dmg)
-            if combatLogSeen then amount = nil end -- the Combat Log tab is the better source when it works
-        else
-            amount = HitAmount((...))
-        end
-        if amount then
-            local c = Char()
-            if amount > (c.topHit or 0) then
-                c.topHit = amount
-                if ready then ScheduleBroadcast() end
-            end
-        end
 
     elseif event == "TIME_PLAYED_MSG" then
         -- GFoA: /played (typed by the player) gives the Overall board's played time
@@ -2195,6 +2020,42 @@ end)
 ---------------------------------------------------------------------
 -- Slash commands
 ---------------------------------------------------------------------
+-- GFoA: /gpvp debug's output in a window, ready to copy (chat text can't be selected).
+local debugCopy
+local function ShowDebugCopy(text)
+    if not debugCopy then
+        local f = CreateFrame("Frame", "GayFurriesLeaderboardDebugCopy", UIParent, "BackdropTemplate")
+        f:SetSize(640, 360)
+        f:SetPoint("CENTER")
+        f:SetFrameStrata("DIALOG")
+        f:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
+        f:SetBackdropColor(0, 0, 0, 0.92)
+        f:SetBackdropBorderColor(1, 1, 1, 0.4)
+        tinsert(UISpecialFrames, "GayFurriesLeaderboardDebugCopy") -- close with Esc
+        local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        title:SetPoint("TOPLEFT", 12, -10)
+        title:SetText("Press Ctrl+C to copy, then Esc to close")
+        local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+        close:SetPoint("TOPRIGHT", 0, 0)
+        local scroll = CreateFrame("ScrollFrame", "GayFurriesLeaderboardDebugCopyScroll", f, "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", 12, -34)
+        scroll:SetPoint("BOTTOMRIGHT", -32, 12)
+        local edit = CreateFrame("EditBox", nil, scroll)
+        edit:SetMultiLine(true)
+        edit:SetAutoFocus(false)
+        edit:SetFontObject(ChatFontNormal)
+        edit:SetSize(590, 310)
+        edit:SetScript("OnEscapePressed", function() f:Hide() end)
+        scroll:SetScrollChild(edit)
+        f.edit = edit
+        debugCopy = f
+    end
+    debugCopy.edit:SetText(text)
+    debugCopy:Show()
+    debugCopy.edit:SetFocus()
+    debugCopy.edit:HighlightText()
+end
+
 SLASH_GUILDPVPBOARD1 = "/gpvp"
 SLASH_GUILDPVPBOARD2 = "/pvplb"
 SLASH_GUILDPVPBOARD3 = "/gayleaderboard"
@@ -2209,6 +2070,16 @@ SlashCmdList["GUILDPVPBOARD"] = function(msg)
         print("|cff33ff99GayFurriesLeaderboard:|r data cleared.")
         Broadcast()
     elseif msg == "debug" then
+        local copyLines = {}
+        local function print(...) -- also collects each line for the copy window
+            local parts = {}
+            for i = 1, select("#", ...) do
+                local v = select(i, ...)
+                parts[i] = (issecretvalue and issecretvalue(v)) and "<secret>" or tostring(v)
+            end
+            copyLines[#copyLines + 1] = table.concat(parts, " ")
+            _G.print(...)
+        end
         local api = ApiLifetimeKills()
         local c = Char() -- GFoA: this character's counters
         print("|cff33ff99GayFurriesLeaderboard debug|r")
@@ -2221,21 +2092,18 @@ SlashCmdList["GUILDPVPBOARD"] = function(msg)
         print("  sharing gold:", tostring(db.shareGold ~= false))
         local profs = ReadMainProfessions() or c.profs or {}
         print("  overall: level", tostring(UnitLevel("player")), "| played", PlayedText(PlayedNow(c) or -1),
-            "| professions", (profs[1] or "-") .. " / " .. (profs[2] or "-") .. " (from " .. profSource .. ")", "| top hit", c.topHit or 0,
-            "| combat log tab", combatLogLines .. (hookedCombatLog and "" or " (tab not found)"),
-            "| combat chat events", hitEvents .. "/2", "| target damage", targetDamage)
+            "| professions", (profs[1] or "-") .. " / " .. (profs[2] or "-") .. " (from " .. profSource .. ")")
+        print("  gear score now:", tostring(select(2, pcall(ReadGearScore))), "| saved:", tostring(c.gs))
         local gs = 0
         for _ in pairs(guildSet) do gs = gs + 1 end
         print("  duels saved:", #(db.duels or {}), "deathrolls saved:", #(db.rolls or {}), "guild roster names known:", gs)
         print("  week id:", CurrentWeekId(), "kill week base:", tostring(c.weekBase))
-        print("  kill season:", KILLS_SEASON, "kept kills:", tostring(c.keptKills), "season kills (no BGs, no raid groups):", c.seasonKills or 0,
-            "| in a raid group now:", tostring(InRaidGroup()))
-        print("  kill signals: lifetime count", tostring(ApiLifetimeKills()), "| honor lines this session", honorLines,
-            "| pending: chat", c.logPending or 0, "lifetime", c.apiPending or 0)
+        print("  board kills (no BGs, no raid groups):", CurrentKills(), "| in a raid group now:", tostring(InRaidGroup()))
+        ShowDebugCopy(table.concat(copyLines, "\n"))
     elseif msg == "source api" or msg == "source log" then
         db.source = msg:match("source (%a+)")
         print("|cff33ff99GayFurriesLeaderboard:|r kill source set to", db.source,
-            "(debug only: the board always counts honorable-kill messages outside BGs and raid groups)")
+            "(debug only: the board always counts the game's lifetime kills outside BGs and raid groups)")
     elseif msg == "clearduels" then
         db.duels = {}
         print("|cff33ff99GayFurriesLeaderboard:|r duel log cleared.")
