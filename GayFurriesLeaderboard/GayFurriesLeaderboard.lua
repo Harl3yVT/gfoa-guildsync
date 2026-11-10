@@ -310,38 +310,87 @@ end
 ---------------------------------------------------------------------
 -- GFoA: Overall board (class, level, /played time, two main professions, highest single hit)
 ---------------------------------------------------------------------
--- Main professions are the skills under the Professions header. Secondary skills (Cooking, Fishing, First Aid) sit
--- under their own header and Poisons is a rogue class skill; they're also filtered by name in case a client lists
--- them differently.
+-- Main professions. Read three ways, first one that finds any wins (clients differ in which of these work):
+--   1. the skill list, matching profession names anywhere in it (no reliance on section headings)
+--   2. GetProfessions(): its first two slots are the main professions (cooking/fishing have their own slots)
+--   3. the profession spells you know (Apprentice to Artisan of each)
+-- Cooking, Fishing, First Aid and Poisons never count.
+local MAIN_PROFESSIONS = {
+    Alchemy = true, Blacksmithing = true, Enchanting = true, Engineering = true, Herbalism = true,
+    Leatherworking = true, Mining = true, Skinning = true, Tailoring = true, Jewelcrafting = true, Inscription = true,
+}
 local NOT_MAIN_PROFESSION = { ["Cooking"] = true, ["Fishing"] = true, ["First Aid"] = true, ["Poisons"] = true }
+-- Profession rank spells (Apprentice, Journeyman, Expert, Artisan).
+local PROFESSION_SPELLS = {
+    Alchemy = { 2259, 3101, 3464, 11611 },        Blacksmithing = { 2018, 3100, 3538, 9785 },
+    Enchanting = { 7411, 7412, 7413, 13920 },     Engineering = { 4036, 4037, 4038, 12656 },
+    Herbalism = { 2366, 2368, 3570, 11993 },      Leatherworking = { 2108, 3104, 3811, 10662 },
+    Mining = { 2575, 2576, 3564, 10248 },         Skinning = { 8613, 8617, 8618, 10768 },
+    Tailoring = { 3908, 3909, 3910, 12180 },
+}
 -- Short names, used on the Overall board when both full names don't fit.
 local PROF_SHORT = {
     Alchemy = "Alch", Blacksmithing = "BS", Enchanting = "Ench", Engineering = "Eng", Herbalism = "Herb",
     Leatherworking = "LW", Mining = "Mine", Skinning = "Skin", Tailoring = "Tailor", Jewelcrafting = "JC",
 }
+local profSource = "none" -- which method found them last (for /gpvp debug)
 
--- This character's main professions (up to 2), or nil when the skill list can't be read right now (not loaded yet,
--- or the Professions header is collapsed): keep the saved ones then.
-local function ReadMainProfessions()
-    if not GetNumSkillLines or not GetSkillLineInfo then return nil end
-    local n = GetNumSkillLines() or 0
-    if n == 0 then return nil end
-    local header = TRADE_SKILLS or "Professions"
-    local out, inProf, sawHeader = {}, false, false
-    for i = 1, n do
-        local name, isHeader, isExpanded = GetSkillLineInfo(i)
-        if isHeader then
-            inProf = (name == header) or (name == "Professions")
-            if inProf then
-                sawHeader = true
-                if not isExpanded then return nil end
-            end
-        elseif inProf and name and not NOT_MAIN_PROFESSION[name] and #out < 2 then
-            out[#out + 1] = name
+local function ProfsFromSkillLines()
+    if not GetNumSkillLines or not GetSkillLineInfo then return {} end
+    local out = {}
+    for i = 1, GetNumSkillLines() or 0 do
+        local name, isHeader = GetSkillLineInfo(i)
+        if not isHeader and MAIN_PROFESSIONS[name or ""] and #out < 2 then out[#out + 1] = name end
+    end
+    return out
+end
+
+local function ProfsFromGetProfessions()
+    if not GetProfessions or not GetProfessionInfo then return {} end
+    local ok, p1, p2 = pcall(GetProfessions)
+    if not ok then return {} end
+    local out = {}
+    for _, idx in ipairs({ p1 or false, p2 or false }) do
+        if idx then
+            local name = GetProfessionInfo(idx)
+            if type(name) == "string" and name ~= "" and not NOT_MAIN_PROFESSION[name] then out[#out + 1] = name end
         end
     end
-    if not sawHeader then return nil end
     return out
+end
+
+local function KnowsSpell(id)
+    if IsPlayerSpell then return IsPlayerSpell(id) end
+    if IsSpellKnown then return IsSpellKnown(id) end
+    return false
+end
+
+local function ProfsFromSpells()
+    local out = {}
+    for name, ids in pairs(PROFESSION_SPELLS) do
+        for _, id in ipairs(ids) do
+            local ok, known = pcall(KnowsSpell, id)
+            if ok and known then out[#out + 1] = name; break end
+        end
+    end
+    table.sort(out)
+    while #out > 2 do table.remove(out) end
+    return out
+end
+
+-- This character's main professions (up to 2), or nil when none could be read right now: keep the saved ones then.
+local function ReadMainProfessions()
+    for _, m in ipairs({
+        { "skill list", ProfsFromSkillLines }, { "GetProfessions", ProfsFromGetProfessions }, { "spells", ProfsFromSpells },
+    }) do
+        local ok, out = pcall(m[2])
+        if ok and type(out) == "table" and #out > 0 then
+            profSource = m[1]
+            return out
+        end
+    end
+    profSource = "none found"
+    return nil
 end
 
 -- Played time comes only from /played (typed by the player; the addon never asks, so chat stays quiet). After that
@@ -2048,7 +2097,7 @@ SlashCmdList["GUILDPVPBOARD"] = function(msg)
         print("  sharing gold:", tostring(db.shareGold ~= false))
         local profs = ReadMainProfessions() or c.profs or {}
         print("  overall: level", tostring(UnitLevel("player")), "| played", PlayedText(PlayedNow(c) or -1),
-            "| professions", (profs[1] or "-") .. " / " .. (profs[2] or "-"), "| top hit", c.topHit or 0,
+            "| professions", (profs[1] or "-") .. " / " .. (profs[2] or "-") .. " (from " .. profSource .. ")", "| top hit", c.topHit or 0,
             "| combat chat events", hitEvents .. "/2")
         local gs = 0
         for _ in pairs(guildSet) do gs = gs + 1 end
