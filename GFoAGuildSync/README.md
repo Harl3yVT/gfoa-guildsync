@@ -126,6 +126,7 @@ The old `/gfoa` still works and does the same thing as `/gf`.
 | `/gf crafts` | Craft requests your characters can make, with Dismiss |
 | `/gf toasts on\|off` | Toasts for leaderboard moves and guildies reaching 60 (off by default) |
 | `/gf xp` | XP/hour, next level and time to 60 |
+| `/gf xp reset` | Start a fresh XP/hour session (also in the minimap menu) |
 | `/gf export` | Export your characters for the Discord ("Import from addon") |
 | `/gf link CODE` | Link this WoW account to your Discord (code from the guild Discord panel > Link game account); `/gf link` shows the status |
 | `/gf unlink` | Remove the link code |

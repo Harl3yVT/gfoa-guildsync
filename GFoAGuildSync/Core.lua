@@ -426,7 +426,7 @@ local function status()
   if ns.lastError then
     ns.print(string.format("|cffff6666%d error(s), last: %s|r", ns.errorCount or 0, ns.lastError))
   end
-  ns.print("commands: /gf guild | lb | cd | attune | dungeons | xp | level | finder | stats | chars | ask ITEM"
+  ns.print("commands: /gf guild | lb | cd | attune | dungeons | xp [reset] | level | finder | stats | chars | ask ITEM"
     .. " | ready | events | reminders | who ITEM | crafts | toasts on|off"
     .. " | export | link CODE | unlink | main | options | show | minimap [reset] | roster | lootmin N | alts | sync"
     .. " | officer | quest ID | questid | api | chatlog | reset | pegs")
