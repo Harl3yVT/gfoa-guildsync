@@ -14,7 +14,9 @@ local RESET_OFFSET = 5 * 86400 + RESET_HOUR_UTC * 3600 -- epoch 0 was a Thursday
 -- GFoA: PvP kill season. The board KEEPS everyone's kills (Harley: never reset players' stats), so a season does not
 -- zero the total: c.keptKills (the 1.8.4 total, frozen once) + c.seasonKills (world kills since). Older copies'
 -- totals are on the same scale, so they are shown as-is.
-local KILLS_SEASON = 1
+-- 0.3.2 (addon 1.8.6, Harley's call): season 2 = a FULL reset. Everyone's kills restart at 0 and only world PvP
+-- kills count from here; entries from older versions/seasons show 0 kills until they update.
+local KILLS_SEASON = 2
 
 local SendAddonMessage = (C_ChatInfo and C_ChatInfo.SendAddonMessage) or _G.SendAddonMessage
 local RegisterPrefix = (C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix) or _G.RegisterAddonMessagePrefix
@@ -86,7 +88,9 @@ local function Char()
     end
     if c.ks ~= KILLS_SEASON then -- new kill season: count new world kills from 0 on top of the kept total
         c.ks = KILLS_SEASON
-        c.seasonKills = 0 -- kills before this are kept in c.keptKills (see SyncKills); weekBase stays on the same scale
+        c.seasonKills = 0
+        c.keptKills = 0 -- full reset: nothing kept (also stops SyncKills freezing an old total)
+        c.weekBase = 0
     end
     return c
 end
@@ -175,13 +179,7 @@ local function SyncKills(zoneChange)
 end
 
 local function CurrentKills()
-    local c = Char()
-    if c.keptKills == nil then -- not frozen yet (first seconds after login): the old kept count
-        local api = ApiLifetimeKills()
-        if db.source == "log" or not api then return c.logWorld or c.logKills or 0 end
-        return math.max(api, c.worldKills or 0)
-    end
-    return c.keptKills + (c.seasonKills or 0) -- GFoA: kept kills + world kills since 0.3.1 (see KILLS_SEASON)
+    return Char().seasonKills or 0 -- GFoA: this kill season's world kills only (full reset in season 2)
 end
 
 -- Updates and returns the player's own entry.
@@ -1567,9 +1565,10 @@ function Refresh()
     else
     for name, m in pairs(db.members) do
         local cur = (m.week == wk) -- a stale week counts as 0
-        list[#list + 1] = { -- GFoA: everyone's kills are kept, whatever version sent them
+        local season = (m.ks == KILLS_SEASON) -- GFoA: kills from an older kill season or version count as 0
+        list[#list + 1] = {
             name = name, class = m.class,
-            total = m.total or 0, weekly = cur and (m.weekly or 0) or 0,
+            total = season and (m.total or 0) or 0, weekly = (season and cur) and (m.weekly or 0) or 0,
             dTotal = m.dTotal or 0, dWeekly = cur and (m.dWeekly or 0) or 0,
             gold = m.gold or -1,
         }
@@ -1912,7 +1911,7 @@ ev:SetScript("OnEvent", function(_, event, ...)
         db.members = db.members or {}
         db.overall = db.overall or {} -- GFoA: Overall board lines, by name
         db.source = db.source or "api"
-        db.killSeason = nil -- GFoA: kills are kept, so GFoA Guild Sync's Leaderboards view must not zero old seasons
+        db.killSeason = KILLS_SEASON -- GFoA: read by GFoA Guild Sync's Leaderboards view (zeroes older seasons)
         -- GFoA: db.deaths is no longer defaulted here; deaths are per character in db.chars (see Char())
         if not db.theme then -- migrate from the old toggles
             db.theme = db.straight and "straight" or (db.cat and "cat" or "gay")
