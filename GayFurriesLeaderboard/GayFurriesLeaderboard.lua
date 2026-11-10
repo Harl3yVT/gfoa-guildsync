@@ -1986,6 +1986,7 @@ local function CombatLogHitAmount(text)
     if type(text) ~= "string" then return nil end
     if issecretvalue and issecretvalue(text) then combatLogLines = "secret (hidden from addons)"; return nil end
     combatLogLines = "readable"
+    if not text:find("You", 1, true) then return nil end -- cheap skip: only "Your ..." / "You ..." lines are yours
     local t = PlainText(text):gsub("^[%d/:%.%s]+", "") -- an optional timestamp
     t = t:gsub("[%[%]]", "")                         -- optional [brackets] around names
     for _, verb in ipairs(LOG_VERBS) do
@@ -2028,7 +2029,10 @@ for _, e in ipairs({ "CHAT_MSG_COMBAT_SELF_HITS", "CHAT_MSG_SPELL_SELF_DAMAGE" }
         hitEvents = hitEvents + 1
     end
 end
-pcall(ev.RegisterEvent, ev, "UNIT_COMBAT")
+-- only the target's UNIT_COMBAT is used: where the client can, don't wake up for every party/raid member's
+if not (ev.RegisterUnitEvent and pcall(ev.RegisterUnitEvent, ev, "UNIT_COMBAT", "target")) then
+    pcall(ev.RegisterEvent, ev, "UNIT_COMBAT")
+end
 pcall(ev.RegisterEvent, ev, "TIME_PLAYED_MSG")
 pcall(ev.RegisterEvent, ev, "PLAYER_LOGOUT")
 pcall(ev.RegisterEvent, ev, "PLAYER_LEVEL_UP")
