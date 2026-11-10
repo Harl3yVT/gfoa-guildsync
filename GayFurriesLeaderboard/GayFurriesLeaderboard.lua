@@ -1,6 +1,7 @@
 ---------------------------------------------------------------------
 -- Gay Furries of Azeroth Leaderboard
--- Three guild leaderboards: PvP kills (battleground kills stopped counting in 0.2.1; earlier kills kept), deaths (weekly + lifetime), gold.
+-- Three guild leaderboards: PvP kills (world PvP only: no battlegrounds, no raid groups; restarted at 0 in 0.3.0),
+-- deaths (weekly + lifetime), gold.
 -- Target: WoW Forever client 1.60.1 (Classic-style API, Interface 16001)
 ---------------------------------------------------------------------
 local PREFIX = "GPVPLB"
@@ -8,6 +9,9 @@ local PREFIX = "GPVPLB"
 -- Weekly reset: Tuesday at this UTC hour. Adjust to match your region's reset.
 local RESET_HOUR_UTC = 15
 local RESET_OFFSET = 5 * 86400 + RESET_HOUR_UTC * 3600 -- epoch 0 was a Thursday
+
+-- GFoA: PvP kill season. Bump it to restart the kill board (weekly and total) at 0 for everyone on the new version.
+local KILLS_SEASON = 1
 
 local SendAddonMessage = (C_ChatInfo and C_ChatInfo.SendAddonMessage) or _G.SendAddonMessage
 local RegisterPrefix = (C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix) or _G.RegisterAddonMessagePrefix
@@ -70,6 +74,11 @@ local function Char()
         db.migratedChars = true
         db.chars[me] = c
     end
+    if c.ks ~= KILLS_SEASON then -- new kill season: this character's kills start again at 0 (deaths untouched)
+        c.ks = KILLS_SEASON
+        c.seasonKills = 0
+        c.weekBase = 0
+    end
     return c
 end
 
@@ -91,6 +100,21 @@ local function InBattleground()
         if inInstance and (kind == "pvp" or kind == "arena") then return true end
     end
     return false
+end
+
+-- GFoA kill season (0.3.0): the PvP board restarted at 0 (weekly and total) for everyone. Season kills are counted
+-- one by one from the honorable-kill chat line, at the moment of the kill, and only outside battlegrounds and raid
+-- groups. (The API lifetime count can't be used: it can't be split by where a kill happened, and an increase can show
+-- up after you've left the BG.) Bump KILLS_SEASON to restart the board again. Entries from addons on an older
+-- season (members[name].ks ~= KILLS_SEASON) count as 0 kills.
+local function InRaidGroup()
+    if IsInRaid then return IsInRaid() and true or false end
+    if GetNumRaidMembers then return (GetNumRaidMembers() or 0) > 0 end
+    return false
+end
+
+local function KillCounts()
+    return not InBattleground() and not InRaidGroup()
 end
 
 -- Folds new API kills into c.worldKills unless they were made in a BG. zoneChange = true for loading screens:
@@ -132,15 +156,7 @@ local function SyncKills(zoneChange)
 end
 
 local function CurrentKills()
-    local c = Char() -- GFoA: per character
-    if c.killsV ~= KILLS_VERSION then -- not seeded yet (first seconds after login): the old lifetime count
-        if db.source == "log" then return c.logKills or 0 end
-        return ApiLifetimeKills() or c.logKills or 0
-    end
-    if db.source == "log" or not ApiLifetimeKills() then
-        return c.logWorld or 0
-    end
-    return c.worldKills or 0
+    return Char().seasonKills or 0 -- GFoA: this kill season's world kills (see KILLS_SEASON)
 end
 
 -- Updates and returns the player's own entry.
@@ -156,8 +172,6 @@ local function UpdateOwn()
         c.weekBase = kills
         c.dWeekBase = deaths
     end
-    -- GFoA: /gpvp source is account-wide but the kill base is per character; re-baseline one taken from the other source
-    if c.baseSource ~= db.source then c.baseSource = db.source; c.weekBase = kills end
     if not c.weekBase then c.weekBase = kills end
     if not c.dWeekBase then c.dWeekBase = deaths end
     -- GFoA fix: a lower kill count (another character on this account-wide DB, or a bad read) used to lower the
@@ -170,7 +184,7 @@ local function UpdateOwn()
         dTotal = deaths, dWeekly = deaths - c.dWeekBase,
         -- GFoA fix: Hidden Mode also hides your own saved entry (SavedVariables get uploaded to the guild Discord)
         gold = (db.shareGold == false) and -1 or (GetMoney() or 0),
-        week = wk, class = class or "", updated = time(),
+        week = wk, class = class or "", updated = time(), ks = KILLS_SEASON,
     }
     local me = MyName()
     local first = UnitName("player")
@@ -376,6 +390,8 @@ end
 -- Networking
 -- Message: kills:killsWeekly:weekId:CLASS:deaths:deathsWeekly:copper
 -- copper is -1 if the player chose not to share their gold.
+-- GFoA: followed by "S:season" (kill season, see KILLS_SEASON). Sent separately so older clients, whose parser
+-- expects exactly the fields above, still read the main message; they ignore the S line.
 ---------------------------------------------------------------------
 local lastSend, pending = 0, false
 
@@ -386,6 +402,7 @@ local function Broadcast()
     local gold = (db.shareGold == false) and -1 or m.gold
     SendAddonMessage(PREFIX, string.format("%d:%d:%d:%s:%d:%d:%.0f",
         m.total, m.weekly, m.week, m.class, m.dTotal, m.dWeekly, gold), "GUILD")
+    SendAddonMessage(PREFIX, "S:" .. KILLS_SEASON, "GUILD")
     lastSend = GetTime()
     if Refresh then Refresh() end
 end
@@ -626,6 +643,14 @@ local function OnAddonMessage(prefix, text, channel, sender)
     if text == "REQ" then
         -- stagger replies so the whole guild doesn't answer at once
         C_Timer.After(1 + math.random() * 8, Broadcast)
+        return
+    end
+
+    -- GFoA kill season, sent right after the sender's stats message
+    local ks = text:match("^S:(%d+)$")
+    if ks then
+        local m = db.members[name]
+        if m then m.ks = tonumber(ks); if Refresh then Refresh() end end
         return
     end
 
@@ -1516,9 +1541,10 @@ function Refresh()
     else
     for name, m in pairs(db.members) do
         local cur = (m.week == wk) -- a stale week counts as 0
+        local season = (m.ks == KILLS_SEASON) -- GFoA: kills from an older kill season count as 0
         list[#list + 1] = {
             name = name, class = m.class,
-            total = m.total or 0, weekly = cur and (m.weekly or 0) or 0,
+            total = season and (m.total or 0) or 0, weekly = (season and cur) and (m.weekly or 0) or 0,
             dTotal = m.dTotal or 0, dWeekly = cur and (m.dWeekly or 0) or 0,
             gold = m.gold or -1,
         }
@@ -1861,6 +1887,7 @@ ev:SetScript("OnEvent", function(_, event, ...)
         db.members = db.members or {}
         db.overall = db.overall or {} -- GFoA: Overall board lines, by name
         db.source = db.source or "api"
+        db.killSeason = KILLS_SEASON -- GFoA: read by GFoA Guild Sync's Leaderboards view
         -- GFoA: db.deaths is no longer defaulted here; deaths are per character in db.chars (see Char())
         if not db.theme then -- migrate from the old toggles
             db.theme = db.straight and "straight" or (db.cat and "cat" or "gay")
@@ -1922,6 +1949,7 @@ ev:SetScript("OnEvent", function(_, event, ...)
             local c = Char() -- GFoA: per character
             c.logKills = (c.logKills or 0) + 1
             if not InBattleground() then c.logWorld = (c.logWorld or 0) + 1 end -- GFoA: world PvP only
+            if KillCounts() then c.seasonKills = (c.seasonKills or 0) + 1 end -- GFoA: the board's count
         end
         SyncKills()
         if ready then ScheduleBroadcast() end
@@ -2002,11 +2030,12 @@ SlashCmdList["GUILDPVPBOARD"] = function(msg)
         for _ in pairs(guildSet) do gs = gs + 1 end
         print("  duels saved:", #(db.duels or {}), "deathrolls saved:", #(db.rolls or {}), "guild roster names known:", gs)
         print("  week id:", CurrentWeekId(), "kill week base:", tostring(c.weekBase))
+        print("  kill season:", KILLS_SEASON, "season kills (no BGs, no raid groups):", c.seasonKills or 0,
+            "| in a raid group now:", tostring(InRaidGroup()))
     elseif msg == "source api" or msg == "source log" then
         db.source = msg:match("source (%a+)")
-        Char().weekBase = nil -- re-baseline weekly (GFoA: this character; the others re-baseline via baseSource)
-        print("|cff33ff99GayFurriesLeaderboard:|r kill source set to", db.source)
-        Broadcast()
+        print("|cff33ff99GayFurriesLeaderboard:|r kill source set to", db.source,
+            "(debug only: the board always counts honorable-kill messages outside BGs and raid groups)")
     elseif msg == "clearduels" then
         db.duels = {}
         print("|cff33ff99GayFurriesLeaderboard:|r duel log cleared.")
