@@ -870,7 +870,7 @@ local function TimeAgo(sec)
 end
 
 -- the leaderboards
-local BOARD_ORDER = { "pvp", "deaths", "gold", "duels", "rolls", "rollrank", "overall" }
+local BOARD_ORDER = { "overall", "pvp", "deaths", "gold", "duels", "rolls", "rollrank" }
 local BOARDS = {
     pvp = { label = "PvP Kills", subtitle = "PvP Leaderboard", defaultSort = "weekly",
         cols = { { key = "weekly", label = "Weekly" }, { key = "total", label = "Total" } } },
