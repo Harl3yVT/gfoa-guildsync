@@ -1,6 +1,7 @@
 ---------------------------------------------------------------------
 -- Gay Furries of Azeroth Leaderboard
--- Three guild leaderboards: PvP kills (world PvP only: no battlegrounds, no raid groups; restarted at 0 in 0.3.0),
+-- Three guild leaderboards: PvP kills (new kills count in world PvP only: no battlegrounds, no raid groups; kills
+-- made before 0.3.1 are kept),
 -- deaths (weekly + lifetime), gold.
 -- Target: WoW Forever client 1.60.1 (Classic-style API, Interface 16001)
 ---------------------------------------------------------------------
@@ -10,7 +11,9 @@ local PREFIX = "GPVPLB"
 local RESET_HOUR_UTC = 15
 local RESET_OFFSET = 5 * 86400 + RESET_HOUR_UTC * 3600 -- epoch 0 was a Thursday
 
--- GFoA: PvP kill season. Bump it to restart the kill board (weekly and total) at 0 for everyone on the new version.
+-- GFoA: PvP kill season. The board KEEPS everyone's kills (Harley: never reset players' stats), so a season does not
+-- zero the total: c.keptKills (the 1.8.4 total, frozen once) + c.seasonKills (world kills since). Older copies'
+-- totals are on the same scale, so they are shown as-is.
 local KILLS_SEASON = 1
 
 local SendAddonMessage = (C_ChatInfo and C_ChatInfo.SendAddonMessage) or _G.SendAddonMessage
@@ -81,10 +84,9 @@ local function Char()
         db.migratedChars = true
         db.chars[me] = c
     end
-    if c.ks ~= KILLS_SEASON then -- new kill season: this character's kills start again at 0 (deaths untouched)
+    if c.ks ~= KILLS_SEASON then -- new kill season: count new world kills from 0 on top of the kept total
         c.ks = KILLS_SEASON
-        c.seasonKills = 0
-        c.weekBase = 0
+        c.seasonKills = 0 -- kills before this are kept in c.keptKills (see SyncKills); weekBase stays on the same scale
     end
     return c
 end
@@ -109,11 +111,11 @@ local function InBattleground()
     return false
 end
 
--- GFoA kill season (0.3.0): the PvP board restarted at 0 (weekly and total) for everyone. Season kills are counted
+-- GFoA kill season (0.3.0, kept-kills fix 0.3.1): kills made before are KEPT, not restarted at 0. Season kills are counted
 -- one by one from the honorable-kill chat line, at the moment of the kill, and only outside battlegrounds and raid
 -- groups. (The API lifetime count can't be used: it can't be split by where a kill happened, and an increase can show
--- up after you've left the BG.) Bump KILLS_SEASON to restart the board again. Entries from addons on an older
--- season (members[name].ks ~= KILLS_SEASON) count as 0 kills.
+-- up after you've left the BG.) 0.3.1: the board total is c.keptKills + c.seasonKills; c.keptKills is the old kept
+-- total (c.worldKills / c.logWorld), frozen at the first sync on this version.
 local function InRaidGroup()
     if IsInRaid then return IsInRaid() and true or false end
     if GetNumRaidMembers then return (GetNumRaidMembers() or 0) > 0 end
@@ -134,6 +136,10 @@ local function SyncKills(zoneChange)
     local api = ApiLifetimeKills()
     if c.killsV ~= KILLS_VERSION then -- one-time seed: keep every kill made before the switch
         local logMode = db.source == "log" or not api
+        -- GFoA fix: a 0 here is usually a bad read (honor stats load late). Seeding on it set apiSeen = 0, so the next
+        -- real reading was added on top of the kept kills. Wait for a real number; a character with truly 0 kills
+        -- seeds on its first kill instead.
+        if api == 0 and not logMode then wasBG = nowBG; return end
         local old -- the number this week's base was measured against
         if c.killsV == 2 then
             old = logMode and (c.logWorld or 0) or (c.worldKills or 0)
@@ -148,8 +154,14 @@ local function SyncKills(zoneChange)
         c.killsV = KILLS_VERSION
         local new = logMode and c.logWorld or c.worldKills
         if c.weekBase then c.weekBase = c.weekBase + (new - old) end -- this week's count stays the same
+        if c.keptKills == nil then c.keptKills = math.max(0, new - (c.seasonKills or 0)) end -- GFoA: freeze kept total
         wasBG = nowBG
         return
+    end
+    if c.keptKills == nil then -- GFoA: freeze the kept total (before folding in new kills, which seasonKills counts)
+        -- (logWorld already holds honor lines seen before this first sync, which seasonKills counted too)
+        c.keptKills = (db.source == "log" or not api) and math.max(0, (c.logWorld or 0) - (c.seasonKills or 0))
+            or (c.worldKills or 0)
     end
     if api then
         if c.apiSeen == nil then
@@ -163,7 +175,13 @@ local function SyncKills(zoneChange)
 end
 
 local function CurrentKills()
-    return Char().seasonKills or 0 -- GFoA: this kill season's world kills (see KILLS_SEASON)
+    local c = Char()
+    if c.keptKills == nil then -- not frozen yet (first seconds after login): the old kept count
+        local api = ApiLifetimeKills()
+        if db.source == "log" or not api then return c.logWorld or c.logKills or 0 end
+        return math.max(api, c.worldKills or 0)
+    end
+    return c.keptKills + (c.seasonKills or 0) -- GFoA: kept kills + world kills since 0.3.1 (see KILLS_SEASON)
 end
 
 -- Updates and returns the player's own entry.
@@ -634,7 +652,8 @@ end
 local function OnAddonMessage(prefix, text, channel, sender)
     if prefix ~= PREFIX or channel ~= "GUILD" then return end
     local name = Ambiguate(sender, "short")
-    if name == MyName() then return end
+    -- GFoA fix: guild addon messages come back to the sender, sometimes under the first name only
+    if name == MyName() or name == UnitName("player") then return end
 
     -- GFoA Overall board: O:level:played:topHit:profession1:profession2
     local ol, op, oh, p1, p2 = text:match("^O:(%d+):(%-?%d+):(%d+):([^:]*):([^:]*)$")
@@ -1548,10 +1567,9 @@ function Refresh()
     else
     for name, m in pairs(db.members) do
         local cur = (m.week == wk) -- a stale week counts as 0
-        local season = (m.ks == KILLS_SEASON) -- GFoA: kills from an older kill season count as 0
-        list[#list + 1] = {
+        list[#list + 1] = { -- GFoA: everyone's kills are kept, whatever version sent them
             name = name, class = m.class,
-            total = season and (m.total or 0) or 0, weekly = (season and cur) and (m.weekly or 0) or 0,
+            total = m.total or 0, weekly = cur and (m.weekly or 0) or 0,
             dTotal = m.dTotal or 0, dWeekly = cur and (m.dWeekly or 0) or 0,
             gold = m.gold or -1,
         }
@@ -1894,7 +1912,7 @@ ev:SetScript("OnEvent", function(_, event, ...)
         db.members = db.members or {}
         db.overall = db.overall or {} -- GFoA: Overall board lines, by name
         db.source = db.source or "api"
-        db.killSeason = KILLS_SEASON -- GFoA: read by GFoA Guild Sync's Leaderboards view
+        db.killSeason = nil -- GFoA: kills are kept, so GFoA Guild Sync's Leaderboards view must not zero old seasons
         -- GFoA: db.deaths is no longer defaulted here; deaths are per character in db.chars (see Char())
         if not db.theme then -- migrate from the old toggles
             db.theme = db.straight and "straight" or (db.cat and "cat" or "gay")
@@ -2037,7 +2055,7 @@ SlashCmdList["GUILDPVPBOARD"] = function(msg)
         for _ in pairs(guildSet) do gs = gs + 1 end
         print("  duels saved:", #(db.duels or {}), "deathrolls saved:", #(db.rolls or {}), "guild roster names known:", gs)
         print("  week id:", CurrentWeekId(), "kill week base:", tostring(c.weekBase))
-        print("  kill season:", KILLS_SEASON, "season kills (no BGs, no raid groups):", c.seasonKills or 0,
+        print("  kill season:", KILLS_SEASON, "kept kills:", tostring(c.keptKills), "season kills (no BGs, no raid groups):", c.seasonKills or 0,
             "| in a raid group now:", tostring(InRaidGroup()))
     elseif msg == "source api" or msg == "source log" then
         db.source = msg:match("source (%a+)")
