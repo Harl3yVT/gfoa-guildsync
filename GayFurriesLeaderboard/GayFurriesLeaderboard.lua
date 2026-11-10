@@ -1957,6 +1957,67 @@ ev:RegisterEvent("PLAYER_DEAD")
 ev:RegisterEvent("PLAYER_MONEY")
 ev:RegisterEvent("CHAT_MSG_SYSTEM")
 ev:RegisterEvent("GUILD_ROSTER_UPDATE")
+
+-- GFoA Top Hit, main source: the game's own Combat Log chat tab. Addons can't read the combat log on this client,
+-- but its tab prints it, and lines starting "Your ..." are always your own hits, in any content (solo, group, raid):
+--   "Your Eviscerate hit Twilight Neophyte 303 Physical."  "Your Melee hit Twilight Neophyte 40 Physical."
+--   "Your Sinister Strike hit Twilight Neophyte 10 Physical. (111 Overkill)"
+-- The shown amount leaves out the overkill, so the full hit is the two added up (121 there).
+local combatLogLines = "none seen yet" -- for /gpvp debug: "readable", "secret (hidden from addons)", "none seen yet"
+local combatLogSeen = false           -- a hit was read from the tab: the solo-only UNIT_COMBAT source is ignored
+
+local function RecordHit(amount)
+    if not db or type(amount) ~= "number" or amount <= 0 then return end
+    local c = Char()
+    if amount > (c.topHit or 0) then
+        c.topHit = amount
+        if ready then ScheduleBroadcast() end
+    end
+end
+
+local function PlainText(t)
+    t = t:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+    t = t:gsub("|H.-|h(.-)|h", "%1"):gsub("|T.-|t", ""):gsub("|A.-|a", "")
+    return t
+end
+
+local LOG_VERBS = { "hit", "hits", "crit", "crits" }
+local function CombatLogHitAmount(text)
+    if type(text) ~= "string" then return nil end
+    if issecretvalue and issecretvalue(text) then combatLogLines = "secret (hidden from addons)"; return nil end
+    combatLogLines = "readable"
+    local t = PlainText(text):gsub("^[%d/:%.%s]+", "") -- an optional timestamp
+    t = t:gsub("[%[%]]", "")                         -- optional [brackets] around names
+    for _, verb in ipairs(LOG_VERBS) do
+        local target, amount = t:match("^Your .- " .. verb .. " (.-) (%d+)")
+        if not amount then target, amount = t:match("^You " .. verb .. " (.-) (%d+)") end
+        if amount and target ~= "you" and target ~= "yourself" then
+            return tonumber(amount) + (tonumber(t:match("%((%d+) [Oo]verkill%)")) or 0)
+        end
+    end
+    return nil
+end
+
+local hookedCombatLog = false
+local function HookCombatLog()
+    local f = _G.COMBATLOG -- set by the game's Blizzard_CombatLog to the Combat Log tab's chat frame
+    if type(f) ~= "table" and GetChatWindowInfo then -- else the chat tab named "Combat Log"
+        for i = 1, (NUM_CHAT_WINDOWS or 10) do
+            local name = GetChatWindowInfo(i)
+            if name and (name == (COMBAT_LOG or "Combat Log") or name == "Combat Log") then f = _G["ChatFrame" .. i]; break end
+        end
+    end
+    if hookedCombatLog or type(f) ~= "table" or type(f.AddMessage) ~= "function" or not hooksecurefunc then return end
+    hookedCombatLog = true
+    hooksecurefunc(f, "AddMessage", function(_, text)
+        local amount = CombatLogHitAmount(text)
+        if amount then
+            combatLogSeen = true
+            RecordHit(amount)
+        end
+    end)
+end
+
 -- these may not exist on every client; don't error if they don't
 pcall(ev.RegisterEvent, ev, "PLAYER_PVP_KILLS_CHANGED")
 pcall(ev.RegisterEvent, ev, "CHAT_MSG_COMBAT_HONOR_GAIN")
@@ -1977,6 +2038,7 @@ pcall(ev.RegisterEvent, ev, "TRADE_CLOSED")
 
 ev:SetScript("OnEvent", function(_, event, ...)
     if event == "ADDON_LOADED" then
+        if ... == "Blizzard_CombatLog" then HookCombatLog(); return end -- GFoA Top Hit
         if ... ~= "GayFurriesLeaderboard" then return end
         GayFurriesLeaderboardDB = GayFurriesLeaderboardDB or {}
         db = GayFurriesLeaderboardDB
@@ -1995,6 +2057,7 @@ ev:SetScript("OnEvent", function(_, event, ...)
         ApplyTheme()
 
     elseif event == "PLAYER_ENTERING_WORLD" then
+        HookCombatLog() -- GFoA Top Hit (if the Combat Log tab loaded before this addon)
         SyncKills(true) -- GFoA: kills read now belong to the zone we left (entering or leaving a BG)
         if db and not playedSession then -- GFoA: played time counts again from this login
             playedSession = true
@@ -2060,6 +2123,7 @@ ev:SetScript("OnEvent", function(_, event, ...)
         if event == "UNIT_COMBAT" then
             local unit, action, _, dmg = ...
             amount = TargetHitAmount(unit, action, dmg)
+            if combatLogSeen then amount = nil end -- the Combat Log tab is the better source when it works
         else
             amount = HitAmount((...))
         end
@@ -2127,6 +2191,7 @@ SlashCmdList["GUILDPVPBOARD"] = function(msg)
         local profs = ReadMainProfessions() or c.profs or {}
         print("  overall: level", tostring(UnitLevel("player")), "| played", PlayedText(PlayedNow(c) or -1),
             "| professions", (profs[1] or "-") .. " / " .. (profs[2] or "-") .. " (from " .. profSource .. ")", "| top hit", c.topHit or 0,
+            "| combat log tab", combatLogLines .. (hookedCombatLog and "" or " (tab not found)"),
             "| combat chat events", hitEvents .. "/2", "| target damage", targetDamage)
         local gs = 0
         for _ in pairs(guildSet) do gs = gs + 1 end
