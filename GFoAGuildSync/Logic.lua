@@ -1027,7 +1027,7 @@ end
 -- Board picker order. field: member field; weekly: only counts in the current week; total: the all-time field shown
 -- next to the week on the same board (rank by either one); log: built from that list.
 L.LB_BOARDS = {
-  { key = "pvp", text = "PvP kills", field = "weekly", total = "total", weekly = true },
+  { key = "pvp", text = "PvP kills", field = "weekly", total = "total", weekly = true, kills = true },
   { key = "deaths", text = "Deaths", field = "dWeekly", total = "dTotal", weekly = true },
   { key = "gold", text = "Gold", field = "gold" },
   { key = "duels", text = "Duels", log = "duels" },
@@ -1039,8 +1039,8 @@ L.LB_BOARDS = {
 L.LB_BOARD = {}
 for _, b in ipairs(L.LB_BOARDS) do L.LB_BOARD[b.key] = b end
 -- The 1.6.0 single-number boards, still accepted (not in the picker).
-L.LB_BOARD.pvpWeek = { key = "pvpWeek", text = "PvP week", field = "weekly", weekly = true }
-L.LB_BOARD.pvpTotal = { key = "pvpTotal", text = "PvP total", field = "total" }
+L.LB_BOARD.pvpWeek = { key = "pvpWeek", text = "PvP week", field = "weekly", weekly = true, kills = true }
+L.LB_BOARD.pvpTotal = { key = "pvpTotal", text = "PvP total", field = "total", kills = true }
 L.LB_BOARD.deathsWeek = { key = "deathsWeek", text = "Deaths week", field = "dWeekly", weekly = true }
 L.LB_BOARD.deathsTotal = { key = "deathsTotal", text = "Deaths total", field = "dTotal" }
 
@@ -1086,14 +1086,18 @@ function L.leaderboardRows(db, board, now, by, keep)
     end
   else
     local week = L.lbWeekId(now)
+    -- Kill season (Sephya's addon 0.3.0+ writes db.killSeason): kills from an older season count as 0.
+    local season = type(db.killSeason) == "number" and db.killSeason or nil
     for name, m in pairs(members) do
       if type(name) == "string" and name ~= "" and type(m) == "table" then
+        local oldSeason = cfg.kills and season and m.ks ~= season
         local v = lbNum(m[cfg.field])
         if cfg.weekly and m.week ~= week then v = 0 end   -- a stale week counts as 0
+        if oldSeason then v = 0 end
         if not (board == "gold" and (type(m.gold) ~= "number" or m.gold < 0)) then   -- hidden gold: left out
           local r = { name = name, class = memberClass(name) or "", value = v }
           if cfg.total then
-            r.week, r.total = v, lbNum(m[cfg.total])
+            r.week, r.total = v, oldSeason and 0 or lbNum(m[cfg.total])
             if by == "total" then r.value = r.total end
           end
           table.insert(rows, r)
