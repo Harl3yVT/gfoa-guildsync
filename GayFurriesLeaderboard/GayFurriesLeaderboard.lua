@@ -132,6 +132,30 @@ end
 
 -- Folds new API kills into c.worldKills unless they were made in a BG. zoneChange = true for loading screens:
 -- kills read then belong to the zone we just left (wasBG), not the one we arrived in.
+-- GFoA: the board's kills come from two signals that can both fire for the same kill, in either order: the
+-- honorable-kill chat line (never reaches addons on some clients, e.g. WoW: Forever) and a rise in the game's lifetime
+-- kill count. c.logPending holds kills the chat line counted that the lifetime count hasn't shown yet (it can update
+-- late); c.apiPending holds kills the lifetime count counted in the last minute, so a chat line for the same kill
+-- doesn't count it again. counts: the kill is world PvP (not in a battleground or a raid group).
+local function KillFromApi(c, d, counts)
+    local match = math.min(d, c.logPending or 0)
+    c.logPending = (c.logPending or 0) - match
+    local extra = d - match
+    if extra <= 0 then return end
+    c.apiPending, c.apiPendingAt = (c.apiPending or 0) + extra, time()
+    if counts then c.seasonKills = (c.seasonKills or 0) + extra end
+end
+
+local function KillFromLog(c, counts)
+    if (c.apiPending or 0) > 0 and time() - (c.apiPendingAt or 0) <= 60 then
+        c.apiPending = c.apiPending - 1 -- already counted from the lifetime count
+        return
+    end
+    c.apiPending = 0
+    c.logPending = (c.logPending or 0) + 1
+    if counts then c.seasonKills = (c.seasonKills or 0) + 1 end
+end
+
 local function SyncKills(zoneChange)
     if not db or not ready then return end -- honor stats can read 0 for a moment after login
     local c = Char()
@@ -172,6 +196,7 @@ local function SyncKills(zoneChange)
             c.apiSeen = api -- first reading: baseline only
         elseif api > c.apiSeen then
             if not inBG then c.worldKills = (c.worldKills or 0) + (api - c.apiSeen) end
+            KillFromApi(c, api - c.apiSeen, not inBG and not InRaidGroup()) -- GFoA: the board's count
             c.apiSeen = api
         end -- a lower reading is a bad read (the lifetime count never drops): ignore it
     end
@@ -1930,6 +1955,7 @@ PlaceMini()
 -- Honorable-kill chat line (fallback kill counter; the combat log is off limits to addons here)
 ---------------------------------------------------------------------
 local honorPattern
+local honorLines = 0 -- honorable-kill chat lines seen this session (for /gpvp debug)
 local function IsHonorKillMessage(msg)
     if type(msg) ~= "string" then return false end
     if honorPattern == nil then
@@ -2112,7 +2138,8 @@ ev:SetScript("OnEvent", function(_, event, ...)
             local c = Char() -- GFoA: per character
             c.logKills = (c.logKills or 0) + 1
             if not InBattleground() then c.logWorld = (c.logWorld or 0) + 1 end -- GFoA: world PvP only
-            if KillCounts() then c.seasonKills = (c.seasonKills or 0) + 1 end -- GFoA: the board's count
+            KillFromLog(c, KillCounts()) -- GFoA: the board's count (once per kill, see KillFromApi)
+            honorLines = honorLines + 1
         end
         SyncKills()
         if ready then ScheduleBroadcast() end
@@ -2203,6 +2230,8 @@ SlashCmdList["GUILDPVPBOARD"] = function(msg)
         print("  week id:", CurrentWeekId(), "kill week base:", tostring(c.weekBase))
         print("  kill season:", KILLS_SEASON, "kept kills:", tostring(c.keptKills), "season kills (no BGs, no raid groups):", c.seasonKills or 0,
             "| in a raid group now:", tostring(InRaidGroup()))
+        print("  kill signals: lifetime count", tostring(ApiLifetimeKills()), "| honor lines this session", honorLines,
+            "| pending: chat", c.logPending or 0, "lifetime", c.apiPending or 0)
     elseif msg == "source api" or msg == "source log" then
         db.source = msg:match("source (%a+)")
         print("|cff33ff99GayFurriesLeaderboard:|r kill source set to", db.source,
