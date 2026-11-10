@@ -612,12 +612,6 @@ local function OnAddonMessage(prefix, text, channel, sender)
     local name = Ambiguate(sender, "short")
     if name == MyName() then return end
 
-    if text == "REQ" then
-        -- stagger replies so the whole guild doesn't answer at once
-        C_Timer.After(1 + math.random() * 8, Broadcast)
-        return
-    end
-
     -- GFoA Overall board: O:level:played:topHit:profession1:profession2
     local ol, op, oh, p1, p2 = text:match("^O:(%d+):(%-?%d+):(%d+):([^:]*):([^:]*)$")
     if ol then
@@ -626,6 +620,12 @@ local function OnAddonMessage(prefix, text, channel, sender)
             level = tonumber(ol), played = tonumber(op), hit = tonumber(oh), p1 = p1, p2 = p2, updated = time(),
         }
         if Refresh then Refresh() end
+        return
+    end
+
+    if text == "REQ" then
+        -- stagger replies so the whole guild doesn't answer at once
+        C_Timer.After(1 + math.random() * 8, Broadcast)
         return
     end
 
@@ -1994,14 +1994,14 @@ SlashCmdList["GUILDPVPBOARD"] = function(msg)
         print("  source in use:", db.source)
         print("  deaths counted:", c.deaths or 0, "weekly base:", tostring(c.dWeekBase))
         print("  sharing gold:", tostring(db.shareGold ~= false))
-        local gs = 0
-        for _ in pairs(guildSet) do gs = gs + 1 end
-        print("  duels saved:", #(db.duels or {}), "deathrolls saved:", #(db.rolls or {}), "guild roster names known:", gs)
-        print("  week id:", CurrentWeekId(), "kill week base:", tostring(c.weekBase))
         local profs = ReadMainProfessions() or c.profs or {}
         print("  overall: level", tostring(UnitLevel("player")), "| played", PlayedText(PlayedNow(c) or -1),
             "| professions", (profs[1] or "-") .. " / " .. (profs[2] or "-"), "| top hit", c.topHit or 0,
             "| combat chat events", hitEvents .. "/2")
+        local gs = 0
+        for _ in pairs(guildSet) do gs = gs + 1 end
+        print("  duels saved:", #(db.duels or {}), "deathrolls saved:", #(db.rolls or {}), "guild roster names known:", gs)
+        print("  week id:", CurrentWeekId(), "kill week base:", tostring(c.weekBase))
     elseif msg == "source api" or msg == "source log" then
         db.source = msg:match("source (%a+)")
         Char().weekBase = nil -- re-baseline weekly (GFoA: this character; the others re-baseline via baseSource)
