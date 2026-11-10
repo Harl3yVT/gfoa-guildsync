@@ -272,6 +272,7 @@ function ns.menuItems()
     { text = "Attunements", func = function() ns.toggleAttunements() end },
     { text = "Dungeon runs", func = function() ns.toggleDungeons() end },
     { text = "Levelling and race to 60", func = function() ns.toggleLevelling() end },
+    { text = "Reset XP/hour", func = function() ns.resetXpSession() end },
     { text = "Guildie finder", func = function() ns.toggleFinder() end },
     { text = "Raid night: who's ready", func = function() ns.toggleReady() end },
     { text = "Craft requests for you", func = function() ns.toggleCrafts() end },

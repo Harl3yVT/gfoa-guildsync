@@ -64,6 +64,17 @@ local function sample()
   if ns.updateUI then ns.updateUI() end
 end
 
+-- Starts a fresh XP/hour session (minimap menu "Reset XP/hour", or /gf xp reset).
+function ns.resetXpSession()
+  local t = ns.now()
+  session = { start = t, gained = 0, lastSeen = t }
+  ns.settings.xpSession = session
+  local c = ns.myChar and ns.myChar()
+  if c then c.xpPerHour, c.xpSessionSeconds = nil, nil end
+  sample()
+  ns.print("XP/hour reset: measuring again for " .. math.floor(ns.config.xpMinSessionSeconds / 60) .. " min")
+end
+
 -- One line for /gf and the status window.
 function ns.xpStatusLine()
   if not session then return "XP/hour: starting" end
@@ -115,7 +126,9 @@ function ns.levellingLines()
   return lines
 end
 
-ns.commands["xp"] = function() ns.print(ns.xpStatusLine()) end
+ns.commands["xp"] = function(arg)
+  if arg == "reset" then ns.resetXpSession() else ns.print(ns.xpStatusLine()) end
+end
 
 ns.on("PLAYER_LOGIN", function()
   startSession()
