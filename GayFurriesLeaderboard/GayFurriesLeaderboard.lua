@@ -1134,16 +1134,20 @@ SortHeader(-50, 80)  -- 2: total column
 SortHeader(-50, 160) -- 3: wide column (gold board)
 -- GFoA Overall board: Class | Lvl | Name | GS | Played | Professions
 local hdrClass = StaticHeader("Class", 26, 34, "LEFT")
-local hdrProfs = StaticHeaderR("Professions", -50, 144)
-hdrProfs:SetJustifyH("LEFT")
 local overallHeaders = {
     SortHeader(58, 40, true), -- level
     SortHeader(-202, 60),     -- played
     SortHeader(-262, 34),     -- gear score
+    SortHeader(-50, 144),     -- professions, sorted by both skill levels added up
 }
 overallHeaders[1].fs:SetText("Lvl")
 overallHeaders[2].fs:SetText("Played")
 overallHeaders[3].fs:SetText("GS")
+overallHeaders[4].fs:SetText("Professions")
+overallHeaders[4].fs:ClearAllPoints() -- anchored to the right edge like the others, but its column is left-aligned
+overallHeaders[4].fs:SetPoint("LEFT", 0, 0)
+overallHeaders[4].arrow:ClearAllPoints()
+overallHeaders[4].arrow:SetPoint("LEFT", overallHeaders[4].fs, "RIGHT", 3, 0)
 
 local scroll = CreateFrame("ScrollFrame", "GayFurriesLeaderboardScroll", frame, "UIPanelScrollFrameTemplate")
 scroll:SetPoint("TOPLEFT", 20, -124)
@@ -1462,6 +1466,11 @@ local function PlayedText(sec)
     return m .. "m"
 end
 
+-- The skill level in "185 Mining"; 0 when there's no number (an older version, or no profession).
+local function ProfSkill(p)
+    return tonumber(p:match("^(%d+) ")) or 0
+end
+
 local function SetProfText(f, p1, p2)
     local function join(a, b)
         if a ~= "" and b ~= "" then return a .. " / " .. b end
@@ -1488,7 +1497,7 @@ local function RefreshOverall(th, straight)
         local o = db.overall[name] or {} -- guildmates on an older version: "?" until they update
         list[#list + 1] = {
             name = name, class = m.class, level = o.level or -1, played = o.played or -1, gs = o.gs or -1,
-            p1 = o.p1 or "", p2 = o.p2 or "",
+            p1 = o.p1 or "", p2 = o.p2 or "", profSkill = ProfSkill(o.p1 or "") + ProfSkill(o.p2 or ""),
         }
     end
     table.sort(list, function(a, b)
@@ -1665,7 +1674,7 @@ local function ConfigureBoard()
     local isRolls = (board == "rolls")
     local isLog = (board == "duels") or isRolls
     for _, h in ipairs(sortHeaders) do h.btn:Hide() end
-    hdrClass:Hide(); hdrProfs:Hide() -- GFoA Overall board headers
+    hdrClass:Hide() -- GFoA Overall board header
     hdrName:ClearAllPoints()
     hdrName:SetPoint("TOPLEFT", board == "overall" and 86 or 70, -106)
     if isLog then
@@ -1679,8 +1688,8 @@ local function ConfigureBoard()
         hdrRank:Show(); hdrName:Show()
         hdrDuel:Hide(); hdrWhen:Hide(); hdrRecord:Hide(); hdrBet:Hide()
         if board == "overall" then
-            hdrRank:Hide(); hdrClass:Show(); hdrProfs:Show()
-            for i, key in ipairs({ "level", "played", "gs" }) do
+            hdrRank:Hide(); hdrClass:Show()
+            for i, key in ipairs({ "level", "played", "gs", "profSkill" }) do
                 overallHeaders[i].key = key
                 overallHeaders[i].btn:Show()
             end
