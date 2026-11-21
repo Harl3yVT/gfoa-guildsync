@@ -91,6 +91,9 @@ local function createPanel()
   check("Alt+right-click an item opens \"Ask guild crafters\" (sent only when you click it)", "askAltClick", true)
   check("Hold Shift over an item to list every guild crafter, online first", "crafterLookup", true)
   check("One chat line at login about craft requests my characters can make (off by default)", "craftNotes", false)
+  check("Show guild bounties (Discord bounty board) in player tooltips and the Bounties board", "bountyShow", true)
+  check("Bounty alert: warning and sound when a bounty target is near (off by default; never in battlegrounds)",
+    "bountyAlert", false)
 
   section("Sharing and windows")
   check("Send my character to officers' addons (guild sync)", "guildSync", true)
@@ -109,7 +112,44 @@ local function createPanel()
   place(W.check(content, "Show status window", function() return ns.settings.frameShown end,
     function(v) ns.toggleFrame(v) end))
   check("Share my minigame best scores with guildmates' addons", "shareGameScores", true)
-  check("Open Paw Drop by itself on flight paths and when AFK (never in combat)", "gamesAutoOpen", false)
+  check("Open the minigames by themselves on flight paths, when AFK and in battleground queues (never in combat; it closes"
+    .. " when the queue pops)", "gamesAutoOpen", false)
+  check("Minigame sounds (stock UI sounds, only while the game window is open; off by default)", "gameSounds", false)
+  check("Show minigame badges in player tooltips (\"Paw Drop: #1 this week\"; off by default)", "gameBadges", false)
+  -- Minigame window size, 60-100 % (frame:SetScale), so it can sit small in a corner on flights.
+  local scaleLabel = content:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  scaleLabel:SetPoint("TOPLEFT", 22, y - 2)
+  local scaleSlider = CreateFrame("Slider", nil, content)
+  scaleSlider:SetOrientation("HORIZONTAL")
+  scaleSlider:SetSize(160, 14)
+  scaleSlider:SetPoint("LEFT", scaleLabel, "LEFT", 170, 0)
+  scaleSlider:SetMinMaxValues(60, 100)
+  scaleSlider:SetValueStep(5)
+  if scaleSlider.SetObeyStepOnDrag then scaleSlider:SetObeyStepOnDrag(true) end
+  local track = scaleSlider:CreateTexture(nil, "BACKGROUND")
+  track:SetTexture(W.TEX.pill)
+  track:SetVertexColor(W.C.chip[1], W.C.chip[2], W.C.chip[3], 1)
+  track:SetPoint("LEFT")
+  track:SetPoint("RIGHT")
+  track:SetHeight(8)
+  local thumb = scaleSlider:CreateTexture(nil, "ARTWORK")
+  thumb:SetTexture(W.TEX.dot)
+  thumb:SetVertexColor(W.C.pink[1], W.C.pink[2], W.C.pink[3], 1)
+  thumb:SetSize(14, 14)
+  scaleSlider:SetThumbTexture(thumb)
+  local function refreshScale()
+    local v = math.floor((tonumber(ns.opt("gamesScale", 1)) or 1) * 100 + 0.5)
+    scaleLabel:SetText("Minigame window size: " .. W.PINK .. v .. "%|r")
+    return v
+  end
+  scaleSlider:SetScript("OnValueChanged", function(_, v)
+    v = math.floor(v / 5 + 0.5) * 5
+    ns.setOpt("gamesScale", v / 100)
+    refreshScale()
+    if ns.applyGamesScale then ns.applyGamesScale() end
+  end)
+  scaleSlider:SetScript("OnShow", function(self) self:SetValue(refreshScale()) end)
+  y = y - 24
   check("Hide the Leaderboard minimap button (open it from this menu instead)", "leaderboardMinimapHidden", false,
     function() ns.applyLeaderboardMinimap() end)
 

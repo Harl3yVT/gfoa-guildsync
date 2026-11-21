@@ -171,12 +171,20 @@ local function unitTooltip(tt)
     alts = L.altsOf(discord, full)
     for i, a in ipairs(alts) do alts[i] = ns.displayName(a) end
   end
-  if #parts == 0 and not altLine and #alts == 0 and not h2h then return end
+  local badges = ns.gameBadges and ns.gameBadges(name) or {}   -- minigame ranks this week (Games.lua)
+  local bountyHead, bountyWhy = nil, nil   -- Bounty.lua: a bounty on this player or their guild
+  if ns.bountyTooltip then bountyHead, bountyWhy = ns.bountyTooltip(unit, name, surname) end
+  if #parts == 0 and not altLine and #alts == 0 and not h2h and #badges == 0 and not bountyHead then return end
   addOnce(tt, "unit:" .. name, function()
     if #parts > 0 then tt:AddLine("GFoA: " .. table.concat(parts, "  "), 0.83, 0.55, 1) end
     if altLine then tt:AddLine(altLine, 0.83, 0.55, 1) end
     if #alts > 0 then tt:AddLine("Alts: " .. table.concat(alts, ", "), 0.7, 0.7, 0.9, true) end
     if h2h then tt:AddLine(h2h, 0.65, 0.62, 0.70) end
+    for _, b in ipairs(badges) do tt:AddLine(b, 0.976, 0.722, 0.831) end
+    if bountyHead then
+      tt:AddLine(bountyHead, 1, 0.35, 0.35)
+      if bountyWhy then tt:AddLine("\"" .. bountyWhy .. "\"", 0.85, 0.6, 0.6, true) end
+    end
   end)
 end
 

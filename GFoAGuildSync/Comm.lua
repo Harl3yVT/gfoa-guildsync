@@ -58,12 +58,19 @@ function ns.queueComm(msg)
   table.insert(queue, msg)
 end
 
+-- A hidden addon whisper to one guildmate (Games.lua challenges), through the same queue.
+function ns.queueWhisper(msg, target)
+  table.insert(queue, { msg = msg, target = target })
+end
+
 local function rawSend(msg)
   if not ns.call("IsInGuild") then return end
+  local channel, target = "GUILD", nil
+  if type(msg) == "table" then msg, channel, target = msg.msg, "WHISPER", msg.target end
   if ns.api("C_ChatInfo.SendAddonMessage") then
-    ns.call("C_ChatInfo.SendAddonMessage", PREFIX, msg, "GUILD")
+    ns.call("C_ChatInfo.SendAddonMessage", PREFIX, msg, channel, target)
   elseif ns.api("SendAddonMessage") then
-    ns.call("SendAddonMessage", PREFIX, msg, "GUILD")
+    ns.call("SendAddonMessage", PREFIX, msg, channel, target)
   end
 end
 
@@ -81,7 +88,7 @@ end
 local function enqueueData(msgId, data)
   -- A newer payload replaces chunks of an older one still waiting.
   for i = #queue, 1, -1 do
-    if string.sub(queue[i], 1, 2) == "D:" then table.remove(queue, i) end
+    if type(queue[i]) == "string" and string.sub(queue[i], 1, 2) == "D:" then table.remove(queue, i) end
   end
   for _, m in ipairs(L.chunkMessages(data, msgId)) do table.insert(queue, m) end
 end
@@ -90,7 +97,7 @@ local function buildPayload()
   local me = ns.call("UnitName", "player")
   local c = me and ns.db.characters[me]
   if type(c) ~= "table" then return nil end
-  local extra = { link = ns.db.link, main = ns.db.main }
+  local extra = { link = ns.db.link, main = ns.db.main, bk = ns.bountyKillsFor and ns.bountyKillsFor(me) or nil }
   local payload = L.exportPayload({ [me] = c }, ns.now(), ns.call("GetRealmName"), ns.ADDON_VERSION, true, extra)
   local data = L.encodeExport(payload)
   if #data > L.EXPORT_MAX then
@@ -124,16 +131,27 @@ local function sayHello()
   if t - lastHello < 900 then return end
   lastHello = t
   table.insert(queue, "H")
+  -- the guild's minigame goal rides along (a separate message: older addons read "H" alone)
+  local goal = ns.gameGoalMessage and ns.gameGoalMessage()
+  if goal then table.insert(queue, goal) end
 end
 
 -- ---------------------------------------------------------------------------
 -- Receiving
 -- ---------------------------------------------------------------------------
 
--- Remembers the highest addon version heard from guildmates (shown only in /gf and on the Options page).
+-- Remembers the highest addon version heard from guildmates (shown in /gf and on the Options page), and prints one
+-- local chat line per session the first time a guildmate's message shows a newer version than ours.
 function ns.heardVersion(version, from)
   if not ns.db then return end
   ns.db.newestSeen = L.noteVersion(ns.db.newestSeen, version, from, ns.now(), ns.ADDON_VERSION)
+  if not ns.versionNudged then
+    local line = L.versionNudge(version, ns.ADDON_VERSION)
+    if line then
+      ns.versionNudged = true
+      ns.print(line)
+    end
+  end
 end
 
 -- The passive "new version is out" line, or nil.

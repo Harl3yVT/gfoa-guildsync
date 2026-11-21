@@ -52,6 +52,7 @@ local function hasLeaderboard()
 end
 
 local function lbValueText(r)
+  if r.wanted then return ns.ui.WAIT .. r.wanted .. "|r" end
   if r.crime then return ns.ui.WAIT .. (L.SHAME_CRIME[r.crime] or r.crime) .. "|r" end
   if r.week then return tostring(r.week) end
   if lbBoard == "duels" or lbBoard == "rolls" then return string.format("%d-%d", r.wins or 0, r.losses or 0) end
@@ -142,9 +143,12 @@ local function refreshLeaderboards()
   local roster = ns.db and ns.db.guild and ns.db.guild.members
   local all
   if L.LB_BOARD[lbBoard].game then
-    all = ns.gameLeaderboardRows and ns.gameLeaderboardRows(lbBy, keep or nil) or {}
+    all = ns.gameLeaderboardRows and ns.gameLeaderboardRows(lbBy, keep or nil, L.LB_BOARD[lbBoard].game) or {}
   elseif L.LB_BOARD[lbBoard].shame then
     all = L.shameRows(db, roster, 30)   -- current guildmates only, so "Former members" doesn't apply
+  elseif L.LB_BOARD[lbBoard].bounty then
+    local d = ns.discordData()
+    all = L.bountyRows(d and d.bounties, now)   -- enemies from the Discord bounty board, not guildmates
   else
     all = L.leaderboardRows(db, lbBoard, now, lbBy, keep or nil)
   end
@@ -155,7 +159,11 @@ local function refreshLeaderboards()
   boardButton:SetText("Board: " .. board.text)
   countText:SetText(string.format("%d on %s, from Sephya's Leaderboard", #lbShown, board.text))
   if board.game then
-    countText:SetText(string.format("%d on %s, from guildmates' addons (/pawdrop to play)", #lbShown, board.text))
+    countText:SetText(string.format("%d on %s, from guildmates' addons (%s to play)", #lbShown, board.text,
+      board.play or "/gf games"))
+  end
+  if board.bounty then
+    countText:SetText(string.format("%d live bounties from the Discord bounty board (post one there)", #lbShown))
   end
   if board.shame then
     countText:SetText(string.format("%d on the Wall of Shame (gold hidden, or no addon and online in 30 days)",
@@ -164,7 +172,10 @@ local function refreshLeaderboards()
   if #lbShown == 0 then
     if board.game then
       frame.emptyState = { "No " .. board.text .. " scores yet",
-        "Play with /pawdrop. Guildmates show up once they've played and are online." }
+        "Play with " .. (board.play or "/gf games") .. ". Guildmates show up once they've played and are online." }
+    elseif board.bounty then
+      frame.emptyState = { "No bounties", "Post one on the guild Discord's bounty board. It shows up here after "
+        .. "the next sync." }
     elseif board.shame then
       frame.emptyState = { "Nobody to shame", "Everyone shares their gold and has the addon. Suspicious." }
     elseif lbBoard == "duels" or lbBoard == "rolls" then
@@ -184,12 +195,14 @@ local function refreshLeaderboards()
     if h.key == "net" then key = "value" end
     if board.shame and (h.key == "value" or h.key == "net") then
       title, key = (h.key == "value" and "Crime" or "Verdict"), "value"
+    elseif board.bounty and (h.key == "value" or h.key == "net") then
+      title, key = (h.key == "value" and "Wanted for" or "Kills, reward"), "value"
     elseif combined and (h.key == "value" or h.key == "net") then
       local by = h.key == "value" and "week" or "total"
       title, key = (by == "week" and "This week" or (board.game and "Best ever" or "Total")), "by:" .. by
     end
     h.sortKey = key
-    h:SetShown(h.key ~= "net" or lbBoard == "rolls" or combined or board.shame)
+    h:SetShown(h.key ~= "net" or lbBoard == "rolls" or combined or board.shame or board.bounty)
     local active = (key == lbSortKey and not (combined and key == "rank"))
       or (key == "by:" .. lbBy and lbSortKey == "rank")
     -- natural order: rank and name go up, numbers go down
