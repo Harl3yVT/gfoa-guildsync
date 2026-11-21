@@ -2,7 +2,8 @@
 
 Guild tools for Gay Furries of Azeroth. Works for every guild member with no setup and no officer rights.
 
-**Nothing intrusive.** No pop-ups, no chat posts, no sounds, no tours, nothing that opens by itself. Everything is a
+**Nothing intrusive.** No pop-ups, no chat posts, no sounds (the Paw Drop window has its own, off by default
+in Options), no tours, nothing that opens by itself. Everything is a
 passive tooltip line, a window you open yourself, or the minimap button. Nothing prints to chat or pops up unless you
 turn it on: event reminders, the craft-request line and toasts are all off by default (Options or `/gf`). The addon
 only reads game state and writes SavedVariables; it never acts for you, never types in chat and never edits guild notes.
@@ -71,10 +72,25 @@ only reads game state and writes SavedVariables; it never acts for you, never ty
   Dismiss. Optional (off by default): one chat line at login when there are some.
 - **Toasts** (`/gf toasts on`, **off by default**): a small note that fades by itself when one of your characters
   moves up a guild leaderboard or a guildie reaches 60.
+- **Guild minigame fun**: right-click a name in Guild scores to **challenge** them to your last board (a hidden
+  addon whisper, only when you click); their challenges show as a "Challenges" button in the game window. A **guild
+  goal** bar counts everyone's pink pegs this week. Top 3 of the week get a **badge** in player tooltips (Options, **off by default**).
+- **Paw Stack** (`/pawstack`, minimap menu, or the switch button in the game window): drop pastel paw-balls into
+  a jar; two of a size merge into the next one. Keep the pile under the line. Next ball shown top right, one
+  **Shake** per game, a **Daily** drop order that's the same for everyone, and your biggest ball in Guild scores.
 - **Paw Drop** (`/gf pegs`, minimap menu): a little peg-and-ball game for flights and AFK. Aim with the mouse,
-  click to shoot, clear the 15 pink pegs; the moving basket gives the ball back, gold pegs give one more. Your best
-  is shared with guildmates' addons ("Guild scores": all time and this week; Options can turn sharing off).
-  Options can also open it by itself on flight paths and when you go AFK (**off by default**, never in combat).
+  click to shoot, clear the pink pegs; the moving basket gives the ball back, gold pegs give one more. 8 boards
+  (Paw print, Rainbow, Diamond, Heart, Crown, Spiral, Twin towers, Guild paw).
+  - **Class power** (the button bottom right), once per game before a shot: Mage *Split*, Hunter *Aimed Shot*,
+    Priest *Shield*, Warrior *Charge*, Paladin *Blessing*, Rogue *Pick Pocket*, Shaman *Chain Lightning*, Warlock
+    *Drain*, Druid *Shapeshift*. Hover the button for what yours does.
+  - **Daily**: the same board for the whole guild each UTC day (the Daily / Free play button).
+  - Your game is kept per character over `/reload` and logout (a ball in flight is finished first).
+  - Your best is shared with guildmates' addons ("Guild scores": all time, this week and today's board, names in
+    class colours; Options can turn sharing off). Scores no board can give are ignored.
+  - Options: open it by itself on flight paths, when AFK and in battleground queues (**off by default**, never in
+    combat, it closes when the queue pops and stays closed if you close it while queued), "Minigame sounds" (stock UI
+    sounds, only while the game window is open, **off by default**) and the window size (60-100 %).
 - Dungeon runs, raid attendance and loot history, and the export string for the Discord "Import from addon" button.
 
 ![Item tooltip with Guild can craft](docs/screenshot-tooltip.png)
@@ -100,6 +116,9 @@ By hand:
 addon data when you `/reload` or log out, using the code that was running at that moment, so the data the new
 version collects reaches Discord at your *next* `/reload` or logout. Easiest: update while the game is closed.
 
+**Newer version out?** When a guildmate's addon shows a newer GFoA Guild Sync than yours, you get one chat line per
+session ("GFoA Guild Sync 1.9.2 is out, you have 1.9.0"). Only you see it; nothing is sent.
+
 ## Commands
 
 The old `/gfoa` still works and does the same thing as `/gf`.
@@ -108,8 +127,11 @@ The old `/gfoa` still works and does the same thing as `/gf`.
 |---|---|
 | `/gf` | Status: roster scan, counts, XP/hour, Discord data, errors, "new version is out" |
 | `/gf guild` | Guild window (also: right-click the minimap button) |
-| `/gf pegs` | Paw Drop minigame and guild scores (also `/gf games`, `/pawdrop`, `/peggle`) |
+| `/gf pegs` | Paw Drop minigame and guild scores (also `/pawdrop`, `/peggle`) |
+| `/gf stack` | Paw Stack minigame (also `/pawstack`); `/gf games` opens the last game played |
+| `/gf gamegoal N` | Officers: the guild's weekly pink-peg goal in Guild scores (no number: show it) |
 | `/gf lb` | Guild window on its Leaderboards view (Sephya's boards: PvP, deaths, gold, duels, deathrolls) |
+| `/gf bounties` | Live bounties from the guild Discord's bounty board (also the **Bounties** board in `/gf lb`) |
 | `/gf cd` | Profession cooldowns: yours and guildmates' |
 | `/gf level` | Levelling buddy and guild race to 60 |
 | `/gf finder` | Guildie finder (online, +-3 levels) |
@@ -150,7 +172,8 @@ Minimap button: left-click opens a menu of every window, right-click opens the g
 ## Options
 
 Esc > Options > AddOns > GFoA Guild Sync (per character; the page scrolls on small screens): every tooltip line, the chat alt suffix, check marks,
-guild sync, Alt+right-click "Ask guild crafters", cooldown sharing, minimap button, status window, loot quality,
+guild sync, Alt+right-click "Ask guild crafters", cooldown sharing, minimap button, status window, minigame score
+sharing, auto-open, sounds and window size, loot quality,
 officer mode, and this character's Discord link status with **Show import code**. The **Link code** box, **Save**
 and **This is my main** set the account-wide link code and main (same as `/gf link CODE` and `/gf main`).
 
@@ -234,3 +257,12 @@ bot repo.
     names the event, `/gf events` lists them; no chat line until `/gf reminders on`, then one 30 and 5 minutes
     before (once, also after `/reload`). Hold Shift, then hover a crafted item: "Guild crafters (online first)". `/gf crafts` lists requests your
     characters can make; Dismiss hides one for good. `/gf toasts on` shows a test toast that fades or closes on click.
+
+## Bounty board
+
+Bounties posted on the guild Discord's bounty board show up in game: a red **GFoA bounty** line in the target's
+tooltip (or **GFoA grudge** for anyone in a bounty guild), a **Bounties** board in `/gf lb`, and `/gf bounties`. An
+optional alert (off by default; Options, "Bounty alert") warns you with a sound when a bounty target is near,
+never in battlegrounds. When you get an honorable kill on a bounty target, the addon claims it on the bounty
+board by itself with your next guild sync. Nothing is ever posted in game chat.
+

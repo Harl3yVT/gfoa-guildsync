@@ -2,7 +2,7 @@
 ## Title: GFoA Guild Sync
 ## Notes: Guild window with alts, guild crafters in tooltips, levelling buddy, guildie finder, cooldowns, pre-raid checklist, raid-night readiness, guild event reminders and private stats for the Gay Furries of Azeroth. Data only, no automation, no pop-ups.
 ## Author: Gay Furries of Azeroth
-## Version: 1.8.8
+## Version: 1.8.9
 ## X-Curse-Project-ID: 1784167
 ## OptionalDeps: GFoAGuildSyncBotData
 ## SavedVariables: GFoAGuildSyncDB, GFoAGuildSyncCache
@@ -13,6 +13,7 @@ Logic.lua
 Codec.lua
 StatsLogic.lua
 GameLogic.lua
+StackLogic.lua
 Core.lua
 Roster.lua
 Character.lua
@@ -21,6 +22,7 @@ XP.lua
 Dungeon.lua
 Stats.lua
 Discord.lua
+Bounty.lua
 Comm.lua
 BotRelay.lua
 Widgets.lua
@@ -34,3 +36,4 @@ Toasts.lua
 Export.lua
 Options.lua
 Games.lua
+StackGame.lua

@@ -9,7 +9,7 @@ ns.ui = W
 W.MEDIA = "Interface\\AddOns\\GFoAGuildSync\\Media\\"
 W.TEX = {
   white = W.MEDIA .. "white", paw = W.MEDIA .. "paw", rule = W.MEDIA .. "rule", pill = W.MEDIA .. "pill",
-  minimap = W.MEDIA .. "minimap", dot = W.MEDIA .. "dot",
+  minimap = W.MEDIA .. "minimap", dot = W.MEDIA .. "dot", pawball = W.MEDIA .. "pawball",
 }
 -- Palette (0-1 RGB) and matching colour escapes.
 W.C = {

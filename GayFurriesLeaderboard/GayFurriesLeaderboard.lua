@@ -88,7 +88,7 @@ end
 -- GFoA: the PvP board counts world PvP kills only, never battleground kills. GetPVPLifetimeStats() includes BG
 -- kills and can't be split, so the board keeps its own per-character counters that only grow outside a BG:
 --   c.worldKills  - increases of the API lifetime count seen outside a BG (c.apiSeen = last API value seen)
---   c.logWorld    - honorable-kill chat lines seen outside a BG (fallback / "/gpvp source log")
+--   c.logWorld    - honorable-kill chat lines seen outside a BG (fallback on a client without the lifetime API)
 -- c.logKills still counts every honor line. Kills made before the switch can't be told apart (the game only gives one
 -- lifetime number), so everyone KEEPS them: the first sync seeds the world counters with the old totals and only kills
 -- after that skip battlegrounds. c.killsV = 3 marks that seed. Version 2 (addon 1.8.3) wrongly restarted totals at 0;
@@ -116,7 +116,7 @@ local function KillCounts()
 end
 
 -- Folds new API kills into c.worldKills unless they were made in a BG or raid group. zoneChange = true for loading
--- screens: kills read then belong to the zone we just left (wasBG), not the one we arrived in.
+-- screens and group changes: kills read then belong to the zone / group we just left (wasBG, wasRaid), not the new one.
 -- GFoA: this is the board's count. The honorable-kill chat line never reaches addons on this client (c.logKills stays
 -- empty while the API count grows), so the board can't be fed from it.
 local function SyncKills(zoneChange)
@@ -126,7 +126,9 @@ local function SyncKills(zoneChange)
     local skip = wasBG or wasRaid or (not zoneChange and (nowBG or nowRaid))
     local api = ApiLifetimeKills()
     if c.killsV ~= KILLS_VERSION then -- one-time seed: keep every kill made before the switch
-        local logMode = db.source == "log" or not api
+        -- GFoA fix: only a client without the API seeds from honor lines. A leftover "/gpvp source log" used to skip the
+        -- bad-0-read guard below, so the next real reading was added on top of the kept kills.
+        local logMode = not api
         -- GFoA fix: a 0 here is usually a bad read (honor stats load late). Seeding on it set apiSeen = 0, so the next
         -- real reading was added on top of the kept kills. Wait for a real number; a character with truly 0 kills
         -- seeds on its first kill instead.
@@ -408,8 +410,11 @@ local function ReadGearScore()
 end
 
 -- Sends (and saves) this character's Overall board line.
--- Message: O:level:played:gearScore:profession1:profession2 (played -1 until /played was typed; professions may be empty)
--- gearScore uses the old Top Hit slot, so older clients still read the line. A profession is "185 Mining".
+-- Message: O:level:played:gearScore:profession1:profession2:g (played -1 until /played was typed; professions may be empty)
+-- A profession is "185 Mining". GFoA fix: the trailing ":g" marks the third number as gear score. Older clients
+-- (0.3.4 = 1.8.8, and before) match the O: line with a strict "...([^:]*)$" pattern, so they don't match the extra
+-- field: until they update, they stop receiving Overall updates from 1.9.0 players (those rows freeze on their side).
+-- Going the other way, their own lines (no ":g", third number = top hit) show "?" for gear score here.
 local function SendOverall()
     local c = Char()
     local profs = ReadMainProfessions()
@@ -424,7 +429,7 @@ local function SendOverall()
     }
     db.overall = db.overall or {}
     db.overall[MyName()] = o
-    SendAddonMessage(PREFIX, string.format("O:%d:%d:%d:%s:%s", o.level, o.played, o.gs, o.p1, o.p2), "GUILD")
+    SendAddonMessage(PREFIX, string.format("O:%d:%d:%d:%s:%s:g", o.level, o.played, o.gs, o.p1, o.p2), "GUILD")
 end
 
 ---------------------------------------------------------------------
@@ -668,12 +673,14 @@ local function OnAddonMessage(prefix, text, channel, sender)
     -- GFoA fix: guild addon messages come back to the sender, sometimes under the first name only
     if name == MyName() or name == UnitName("player") then return end
 
-    -- GFoA Overall board: O:level:played:gearScore:profession1:profession2
-    local ol, op, gs, p1, p2 = text:match("^O:(%d+):(%-?%d+):(%d+):([^:]*):([^:]*)$")
-    if ol then
+    -- GFoA Overall board: O:level:played:gearScore:profession1:profession2:g (0.3.4+), or an older client's
+    -- O:level:played:topHit:profession1:profession2 (no gear score: shown as "?")
+    local ol, op, third, p1, p2, mark = text:match("^O:(%d+):(%-?%d+):(%d+):([^:]*):([^:]*):?(%a*)$")
+    if ol and (mark == "" or mark == "g") then
         db.overall = db.overall or {}
         db.overall[name] = {
-            level = tonumber(ol), played = tonumber(op), gs = tonumber(gs), p1 = p1, p2 = p2, updated = time(),
+            level = tonumber(ol), played = tonumber(op), gs = (mark == "g") and tonumber(third) or nil,
+            p1 = p1, p2 = p2, updated = time(),
         }
         if Refresh then Refresh() end
         return
@@ -1915,6 +1922,8 @@ ev:RegisterEvent("GUILD_ROSTER_UPDATE")
 pcall(ev.RegisterEvent, ev, "PLAYER_PVP_KILLS_CHANGED")
 pcall(ev.RegisterEvent, ev, "CHAT_MSG_COMBAT_HONOR_GAIN")
 pcall(ev.RegisterEvent, ev, "ZONE_CHANGED_NEW_AREA")
+pcall(ev.RegisterEvent, ev, "GROUP_ROSTER_UPDATE") -- GFoA: joining / leaving a raid group (see SyncKills)
+pcall(ev.RegisterEvent, ev, "RAID_ROSTER_UPDATE")  -- the same on older clients
 pcall(ev.RegisterEvent, ev, "TIME_PLAYED_MSG")
 pcall(ev.RegisterEvent, ev, "PLAYER_LOGOUT")
 pcall(ev.RegisterEvent, ev, "PLAYER_LEVEL_UP")
@@ -1998,6 +2007,11 @@ ev:SetScript("OnEvent", function(_, event, ...)
         if ready then ScheduleBroadcast() end
 
     elseif event == "ZONE_CHANGED_NEW_AREA" then
+        SyncKills(true)
+
+    elseif event == "GROUP_ROSTER_UPDATE" or event == "RAID_ROSTER_UPDATE" then
+        -- GFoA fix: wasRaid only changed on the next kill sync, so the first world kill after leaving a raid group
+        -- (with no loading screen in between) was skipped as a raid kill. Kills read now belong to the old group.
         SyncKills(true)
 
     elseif event == "TIME_PLAYED_MSG" then
@@ -2096,7 +2110,6 @@ SlashCmdList["GUILDPVPBOARD"] = function(msg)
         print("  GetPVPLifetimeStats exists:", GetPVPLifetimeStats ~= nil, "value:", tostring(api))
         print("  kills counted from honor messages:", c.logKills or 0, "outside BGs:", c.logWorld or 0)
         print("  world PvP kills (no BGs):", c.worldKills or 0, "| in a BG now:", tostring(InBattleground()))
-        print("  source in use:", db.source)
         print("  deaths counted:", c.deaths or 0, "weekly base:", tostring(c.dWeekBase))
         print("  sharing gold:", tostring(db.shareGold ~= false))
         local profs = ReadMainProfessions() or c.profs or {}
@@ -2109,10 +2122,11 @@ SlashCmdList["GUILDPVPBOARD"] = function(msg)
         print("  week id:", CurrentWeekId(), "kill week base:", tostring(c.weekBase))
         print("  board kills (no BGs, no raid groups):", CurrentKills(), "| in a raid group now:", tostring(InRaidGroup()))
         ShowDebugCopy(table.concat(copyLines, "\n"))
-    elseif msg == "source api" or msg == "source log" then
-        db.source = msg:match("source (%a+)")
-        print("|cff33ff99GayFurriesLeaderboard:|r kill source set to", db.source,
-            "(debug only: the board always counts the game's lifetime kills outside BGs and raid groups)")
+    elseif msg:match("^source") then
+        -- GFoA: the switch is gone. Honor lines never reach addons on Forever, so "log" did nothing for the board.
+        db.source = "api"
+        print("|cff33ff99GayFurriesLeaderboard:|r /gpvp source is gone: the board always counts the game's lifetime"
+            .. " kills outside BGs and raid groups.")
     elseif msg == "clearduels" then
         db.duels = {}
         print("|cff33ff99GayFurriesLeaderboard:|r duel log cleared.")

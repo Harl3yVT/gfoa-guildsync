@@ -280,6 +280,8 @@ function L.exportPayload(characters, now, realm, addonVersion, withRecipes, extr
   if type(extra) == "table" then
     payload.link = L.normalizeLinkCode(extra.link)
     payload.main = L.cleanMainName(extra.main)
+    -- addon 1.10.0+: bounty kills seen by this character's addon, [[bounty id, time, victim first name], ...]
+    if type(extra.bk) == "table" and #extra.bk > 0 then payload.bk = extra.bk end
   end
   return payload
 end

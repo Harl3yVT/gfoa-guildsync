@@ -821,6 +821,13 @@ function L.updateNotice(seen, mine)
   return seen.version .. " is out: update with WowUp or CurseForge, or " .. L.UPDATE_URL
 end
 
+-- The once-a-session chat line when a guildmate's addon message shows `heard`, a newer version than `mine`, else
+-- nil. Local only: nothing is sent.
+function L.versionNudge(heard, mine)
+  if L.compareVersions(heard, mine) ~= 1 then return nil end
+  return "GFoA Guild Sync " .. heard .. " is out, you have " .. mine .. ". Update with WowUp or CurseForge."
+end
+
 -- ---------------------------------------------------------------------------
 -- Forever readiness (1.5.2): instances, encounters, recipes, quest ids
 -- ---------------------------------------------------------------------------
@@ -1042,8 +1049,10 @@ L.LB_BOARDS = {
   { key = "duels", text = "Duels", log = "duels" },
   { key = "rolls", text = "Deathrolls", log = "rolls" },
   { key = "shame", text = "Wall of Shame", shame = true },   -- L.shameRows, not L.leaderboardRows
+  { key = "bounty", text = "Bounties", bounty = true },      -- L.bountyRows (bot data), not Sephya's
   -- Minigame scores heard from guildmates' addons (L.gameLeaderboardRows, GameLogic.lua), not Sephya's data.
-  { key = "paw", text = "Paw Drop", game = "paw", total = "best" },
+  { key = "paw", text = "Paw Drop", game = "paw", total = "best", play = "/pawdrop" },
+  { key = "stack", text = "Paw Stack", game = "stack", total = "best", play = "/pawstack" },
 }
 L.LB_BOARD = {}
 for _, b in ipairs(L.LB_BOARDS) do L.LB_BOARD[b.key] = b end
@@ -1063,7 +1072,7 @@ local function lbNum(v) return type(v) == "number" and v or 0 end
 function L.leaderboardRows(db, board, now, by, keep)
   local rows = {}
   local cfg = L.LB_BOARD[board]
-  if type(db) ~= "table" or not cfg or cfg.shame then return rows end
+  if type(db) ~= "table" or not cfg or cfg.shame or cfg.bounty then return rows end
   local members = type(db.members) == "table" and db.members or {}
   local function memberClass(name)
     local m = members[name]
@@ -1354,6 +1363,9 @@ function L.relayPayload(d, withCrafters)
     end
   end
   local payload = { v = 1, g = L.botDataGenerated(d), c = c }
+  if type(d) == "table" and type(d.bounties) == "table" and #d.bounties > 0 then
+    payload.x = L.bountyRelayRows(d.bounties, L.botDataGenerated(d))   -- addon 1.10.0+; older addons ignore it
+  end
   if withCrafters ~= false then
     local f = {}
     for key, list in pairs(type(d) == "table" and type(d.crafters) == "table" and d.crafters or {}) do
@@ -1404,7 +1416,10 @@ function L.botDataFromRelay(p, now)
       if #names > 0 then crafters[string.lower(key)] = names end
     end
   end
-  return { version = 1, generated = g, characters = chars, crafters = crafters }
+  if p.x ~= nil and type(p.x) ~= "table" then return nil, "bad bounties" end
+  local bounties = L.bountiesFromRelay(p.x, now)
+  return { version = 1, generated = g, characters = chars, crafters = crafters,
+    bounties = #bounties > 0 and bounties or nil }
 end
 
 -- The reply messages for a bot data table: B:<msgId>:<i>/<n>:<chunk> of the GFOA1 string, crafters dropped when the
@@ -1770,6 +1785,182 @@ function L.levelMap(members)
     if type(m) == "table" and type(m.name) == "string" and type(m.level) == "number" then out[m.name] = m.level end
   end
   return out
+end
+
+
+-- ---------------------------------------------------------------------------
+-- 1.10.0: bounty board (docs/bounties.md). Bot data `bounties` (file) / relay `x`; tooltip line, alert, kill claims.
+-- ---------------------------------------------------------------------------
+
+L.BOUNTY_MAX = 100                 -- bounties kept from one table
+L.BOUNTY_TEXT_MAX = 120            -- reason
+L.BOUNTY_SHORT_MAX = 48            -- names, guild, details, reward, poster
+L.BOUNTY_KILL_KEEP = 14 * 86400    -- unsent kill claims are dropped after this
+L.BOUNTY_KILL_GAP = 120            -- same target again within 2 minutes = the same kill
+L.BOUNTY_KILLS_MAX = 20
+L.BOUNTY_ALERT_GAP = 600           -- one alert per target per 10 minutes
+
+local function bStr(v, max)
+  if type(v) ~= "string" or v == "" or #v > max or string.find(v, "[%c|]") then return nil end
+  return v
+end
+
+-- Validated live bounties from the bot export's `bounties` list (or a relayed copy): { id, kind = "player"/"guild",
+-- name, surname?, guild?, details?, reason?, reward?, by?, expires, kills }. Malformed and extra entries are dropped.
+-- Bounties no longer expire (the bot sends expires = 2^31-1); now: still drops a row that has ended (nil keeps all).
+function L.cleanBounties(list, now)
+  local out = {}
+  if type(list) ~= "table" then return out end
+  for _, b in ipairs(list) do
+    if #out >= L.BOUNTY_MAX then break end
+    if type(b) == "table" and type(b.id) == "number" and b.id == math.floor(b.id) and b.id > 0
+      and (b.kind == "player" or b.kind == "guild") and bStr(b.name, L.BOUNTY_SHORT_MAX)
+      and type(b.expires) == "number" and (not now or b.expires > now) then
+      out[#out + 1] = { id = b.id, kind = b.kind, name = b.name, surname = bStr(b.surname, L.BOUNTY_SHORT_MAX),
+        guild = bStr(b.guild, L.BOUNTY_SHORT_MAX), details = bStr(b.details, L.BOUNTY_SHORT_MAX),
+        reason = bStr(b.reason, L.BOUNTY_TEXT_MAX), reward = bStr(b.reward, L.BOUNTY_SHORT_MAX),
+        by = bStr(b.by, L.BOUNTY_SHORT_MAX), expires = b.expires,
+        kills = (type(b.kills) == "number" and b.kills >= 0) and math.floor(b.kills) or 0 }
+    end
+  end
+  return out
+end
+
+-- The bounty on a player: their own (first name, and surname when both sides know it), else one on their guild.
+-- Returns the bounty and how it matched: "player", "guild", or nil.
+function L.bountyFor(bounties, first, surname, guild)
+  if type(bounties) ~= "table" or type(first) ~= "string" or first == "" then return nil end
+  local lf = string.lower(first)
+  local ls = type(surname) == "string" and surname ~= "" and string.lower(surname) or nil
+  local lg = type(guild) == "string" and guild ~= "" and string.lower(guild) or nil
+  local byGuild
+  for _, b in ipairs(bounties) do
+    if b.kind == "player" and string.lower(b.name) == lf then
+      if not b.surname or not ls or string.lower(b.surname) == ls then return b, "player" end
+    elseif b.kind == "guild" and lg and string.lower(b.name) == lg and not byGuild then
+      byGuild = b
+    end
+  end
+  if byGuild then return byGuild, "guild" end
+  return nil
+end
+
+-- Tooltip lines for a matched bounty: the headline, then the reason (may be nil).
+function L.bountyLines(b, how, surnameUnknown)
+  if type(b) ~= "table" then return nil end
+  local head
+  if how == "guild" then
+    head = "GFoA grudge: <" .. b.name .. ">"
+  else
+    head = "GFoA bounty #" .. b.id
+    if b.reward then head = head .. ": " .. b.reward end
+  end
+  local bits = {}
+  if b.kills and b.kills > 0 then bits[#bits + 1] = b.kills .. (b.kills == 1 and " kill" or " kills") end
+  if b.by then bits[#bits + 1] = "by " .. b.by end
+  if how == "player" and b.surname == nil and surnameUnknown ~= false then bits[#bits + 1] = "surname unknown" end
+  if #bits > 0 then head = head .. " (" .. table.concat(bits, ", ") .. ")" end
+  return head, b.reason
+end
+
+-- A Lua pattern for the honor-kill chat line built from the client's COMBATLOG_HONORGAIN format string ("%s dies,
+-- honorable kill Rank: %s (Estimated Honor Points: %d)"). The first %s (the victim) is captured. nil when unusable.
+function L.honorKillPattern(fmt)
+  if type(fmt) ~= "string" or not string.find(fmt, "%%") then return nil end
+  local p = string.gsub(fmt, "%%%d*%$?[sd]", "\1")
+  p = string.gsub(p, "([%%%^%$%(%)%.%[%]%*%+%-%?])", "%%%1")
+  local first = true
+  p = string.gsub(p, "\1", function()
+    if first then first = false; return "(.-)" end
+    return ".-"
+  end)
+  if first then return nil end
+  return "^" .. p .. "$"
+end
+
+-- The victim of an honor-kill line: first name, surname (or nil). nil when the line doesn't match.
+function L.honorKillVictim(msg, pattern)
+  if type(msg) ~= "string" or type(pattern) ~= "string" then return nil end
+  local who = string.match(msg, pattern)
+  if not who or who == "" then return nil end
+  who = string.match(who, "^([^%-]*)") or who   -- drop a realm
+  local first, last = string.match(who, "^%s*(%S+)%s+(%S+)%s*$")
+  if first then return first, last end
+  first = string.match(who, "^%s*(%S+)%s*$")
+  return first, nil
+end
+
+-- Adds a kill claim { id, t, victim } to list (in place) unless it repeats one within BOUNTY_KILL_GAP; drops old
+-- and extra entries. Returns true when added.
+function L.addBountyKill(list, id, t, victim, now)
+  if type(list) ~= "table" or type(id) ~= "number" or type(t) ~= "number" or type(victim) ~= "string" then
+    return false
+  end
+  now = now or t
+  for i = #list, 1, -1 do
+    local k = list[i]
+    if type(k) ~= "table" or type(k[2]) ~= "number" or now - k[2] > L.BOUNTY_KILL_KEEP then table.remove(list, i) end
+  end
+  for _, k in ipairs(list) do
+    if k[1] == id and math.abs(k[2] - t) < L.BOUNTY_KILL_GAP then return false end
+  end
+  list[#list + 1] = { id, t, victim }
+  while #list > L.BOUNTY_KILLS_MAX do table.remove(list, 1) end
+  return true
+end
+
+-- Should we alert for this target now? seen: name -> last alert time (updated in place).
+function L.bountyAlertDue(seen, key, now, gap)
+  if type(seen) ~= "table" or type(key) ~= "string" then return false end
+  local last = seen[key]
+  if type(last) == "number" and now - last < (gap or L.BOUNTY_ALERT_GAP) then return false end
+  seen[key] = now
+  return true
+end
+
+-- Guild window "Bounties" board rows: { rank, name, class = "", value = kills, wanted = reason, quip = info }.
+function L.bountyRows(bounties, now)
+  local rows = {}
+  for _, b in ipairs(L.cleanBounties(bounties, now)) do
+    local info = {}
+    if b.kind == "guild" then info[#info + 1] = "whole guild" elseif b.guild then info[#info + 1] = "<" .. b.guild .. ">" end
+    if b.details then info[#info + 1] = b.details end
+    if b.reward then info[#info + 1] = b.reward end
+    info[#info + 1] = b.kills .. (b.kills == 1 and " kill" or " kills")
+    rows[#rows + 1] = { name = (b.kind == "guild" and ("<" .. b.name .. ">")) or L.fullName(b.name, b.surname),
+      class = "", value = b.kills, wanted = b.reason or "Wanted", quip = table.concat(info, " - "), id = b.id }
+  end
+  table.sort(rows, function(a, c)
+    if a.value ~= c.value then return a.value > c.value end
+    return a.id > c.id
+  end)
+  for i, r in ipairs(rows) do r.rank = i end
+  return rows
+end
+
+-- Relay: compact rows [id, "p"/"g", name, surname, guild, details, reason, reward, by, expires, kills].
+function L.bountyRelayRows(bounties, now)
+  local x = {}
+  for _, b in ipairs(L.cleanBounties(bounties, now)) do
+    x[#x + 1] = { b.id, b.kind == "guild" and "g" or "p", b.name, b.surname or "", b.guild or "", b.details or "",
+      b.reason or "", b.reward or "", b.by or "", b.expires, b.kills }
+  end
+  return x
+end
+
+function L.bountiesFromRelay(x, now)
+  if type(x) ~= "table" then return {} end
+  local list = {}
+  for i, r in ipairs(x) do
+    if i > L.BOUNTY_MAX then break end
+    if type(r) == "table" then
+      local function s(v) return v ~= "" and v or nil end
+      list[#list + 1] = { id = r[1], kind = r[2] == "g" and "guild" or (r[2] == "p" and "player" or nil),
+        name = r[3], surname = s(r[4]), guild = s(r[5]), details = s(r[6]), reason = s(r[7]), reward = s(r[8]),
+        by = s(r[9]), expires = r[10], kills = r[11] }
+    end
+  end
+  return L.cleanBounties(list, now)
 end
 
 return L
