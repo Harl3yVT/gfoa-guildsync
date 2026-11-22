@@ -243,7 +243,7 @@ end
 
 -- Each chat frame calls the filter with the original message, so the suffix appears once per line per frame.
 local function chatFilter(_, _, msg, author, ...)
-  if not ns.opt("chatAltSuffix", true) then return false end
+  if not ns.opt("chatAltSuffix", false) then return false end
   local ok, suffix = pcall(suffixFor, msg, author)
   if ok and suffix then return false, msg .. suffix, author, ... end
   return false
@@ -323,8 +323,8 @@ ns.commands["ask"] = function(arg)
 end
 
 ns.commands["alts"] = function()
-  ns.setOpt("chatAltSuffix", not ns.opt("chatAltSuffix", true))
-  ns.print("alt names in chat " .. (ns.opt("chatAltSuffix", true) and "on" or "off"))
+  ns.setOpt("chatAltSuffix", not ns.opt("chatAltSuffix", false))
+  ns.print("alt names in chat " .. (ns.opt("chatAltSuffix", false) and "on" or "off"))
 end
 
 -- ---------------------------------------------------------------------------
