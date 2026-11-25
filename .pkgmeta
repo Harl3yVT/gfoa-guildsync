@@ -9,3 +9,6 @@ move-folders:
 
 ignore:
   - README.md
+  - CLAUDE.md
+  - CONTRIBUTING.md
+  - GayFurriesLeaderboard/tests
